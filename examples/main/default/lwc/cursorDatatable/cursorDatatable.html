@@ -1,0 +1,23 @@
+<template>
+    <lightning-card title="Resilient Infinite Scroll Datatable" icon-name="standard:record">
+        <div class="slds-m-around_medium">
+            <template if:true={records.length}>
+                <div style="height: 400px;">
+                    <lightning-datatable
+                        key-field="Id"
+                        data={records}
+                        columns={columns}
+                        enable-infinite-loading
+                        onloadmore={handleLoadMore}
+                        is-loading={isLoading}>
+                    </lightning-datatable>
+                </div>
+            </template>
+            <template if:false={records.length}>
+                <div class="slds-align_absolute-center slds-text-color_weak slds-p-around_large">
+                    No records loaded.
+                </div>
+            </template>
+        </div>
+    </lightning-card>
+</template>
