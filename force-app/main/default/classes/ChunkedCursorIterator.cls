@@ -218,6 +218,20 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
   }
 
   /**
+   * @description Reports whether this transaction still has query-row headroom to
+   * fetch at least one more chunk before hitting the per-transaction SOQL row
+   * limit (50k). Distinct from hasNext(): hasNext() asks whether records remain;
+   * hasRowsLeft() asks whether the current transaction can afford to fetch them.
+   * Intended for `while (iter.hasNext() && iter.hasRowsLeft())` loops that yield
+   * to a chained job when the budget runs low.
+   * @return True if remaining query rows are enough for another chunk.
+   */
+  public Boolean hasRowsLeft() {
+    return (Limits.getLimitQueryRows() - Limits.getQueryRows()) >=
+      this.chunkSize;
+  }
+
+  /**
    * @description Fetches the next chunk of records, healing the cursor if it has expired.
    * @return A list containing the next chunk of SObjects.
    */

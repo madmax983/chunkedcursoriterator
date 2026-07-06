@@ -224,6 +224,36 @@ private class ChunkedCursorIteratorTest {
   }
 
   @IsTest
+  static void testHasRowsLeftReturnsTrueWithAmpleHeadroom() {
+    Test.startTest();
+    ChunkedCursorIterator iter = new ChunkedCursorIterator(
+      new ChunkedCursorOptions('SELECT Id FROM Account ORDER BY Name', 2)
+    );
+    System.assertEquals(
+      true,
+      iter.hasRowsLeft(),
+      'A small chunk against a fresh 50k query-row budget has room for another fetch'
+    );
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testHasRowsLeftReturnsFalseWhenChunkExceedsQueryRowLimit() {
+    Test.startTest();
+    // A chunk larger than the per-transaction query-row limit (50k) can never
+    // fit, regardless of prior consumption -- deterministic false.
+    ChunkedCursorIterator iter = new ChunkedCursorIterator(
+      new ChunkedCursorOptions('SELECT Id FROM Account ORDER BY Name', 50001)
+    );
+    System.assertEquals(
+      false,
+      iter.hasRowsLeft(),
+      'A chunk larger than the query-row limit leaves no room for a fetch'
+    );
+    Test.stopTest();
+  }
+
+  @IsTest
   static void testParallelPartitioning() {
     Test.startTest();
     ChunkedCursorIterator iter = new ChunkedCursorIterator(
