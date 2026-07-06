@@ -26,20 +26,23 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
    */
   public Integer totalRecords { get; private set; }
 
-  // Active database cursor state (transient as cursor resources cannot span transactions/serialization)
+  // Active database cursor state. Intentionally NOT transient: a Database.Cursor /
+  // PaginationCursor serializes to a lightweight server-side handle (e.g.
+  // {"queryId":"..."}), so retaining it lets a deserialized iterator resume by
+  // reusing the existing server-side cursor instead of re-opening one. A re-open
+  // would re-charge DailyApexCursorRowsLimit by the full row span (and consume
+  // another DailyApexCursorLimit slot) on every resume. Genuine server-side
+  // expiry is recovered by self-healing (see fetchWithSelfHealing).
   /**
    * @description The active standard Database.Cursor.
    */
   @TestVisible
-  private transient Database.Cursor standardCursor { get; private set; }
+  private Database.Cursor standardCursor { get; private set; }
   /**
    * @description The active Database.PaginationCursor.
    */
   @TestVisible
-  private transient Database.PaginationCursor paginationCursor {
-    get;
-    private set;
-  }
+  private Database.PaginationCursor paginationCursor { get; private set; }
   @TestVisible
   private transient Integer nextPaginationIndex;
 

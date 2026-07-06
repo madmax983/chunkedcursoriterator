@@ -128,7 +128,7 @@ private class ChunkedCursorIteratorTest {
     System.assertEquals(2, chunk1.size());
     System.assertEquals(2, iter.position);
 
-    // Serialize state (verifies transient fields are handled properly)
+    // Serialize state (the cursor handle serializes with it)
     String serialized = JSON.serialize(iter);
     System.assertNotEquals(null, serialized);
 
@@ -138,7 +138,7 @@ private class ChunkedCursorIteratorTest {
       ChunkedCursorIterator.class
     );
 
-    // Resume iteration on the deserialized instance (verifies auto-healing of null cursors)
+    // Resume iteration on the deserialized instance (reuses the retained cursor handle)
     System.assertEquals(
       ChunkedCursorIterator.CursorType.STANDARD,
       deserializedIter.selectedCursorType
@@ -160,6 +160,66 @@ private class ChunkedCursorIteratorTest {
     System.assertEquals(5, deserializedIter.position);
 
     System.assertEquals(false, deserializedIter.hasNext());
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testSerializedStandardCursorHandleSurvivesRoundTrip() {
+    // Correct behavior: a Database.Cursor serializes to a lightweight server-side
+    // handle, so a deserialized iterator must RETAIN it and resume by reusing the
+    // existing cursor -- not re-open one (a re-open re-charges the daily cursor
+    // rows limit by the full span on every resume).
+    Test.startTest();
+    ChunkedCursorIterator iter = new ChunkedCursorIterator(
+      new ChunkedCursorOptions('SELECT Id, Name FROM Account ORDER BY Name', 2)
+        .setSObjectType(Account.SObjectType)
+    );
+    iter.next(); // position -> 2, chunks still remain so the cursor stays open
+    System.assertNotEquals(
+      null,
+      iter.standardCursor,
+      'Cursor should be active while chunks remain'
+    );
+
+    ChunkedCursorIterator resumed = (ChunkedCursorIterator) JSON.deserialize(
+      JSON.serialize(iter),
+      ChunkedCursorIterator.class
+    );
+
+    System.assertNotEquals(
+      null,
+      resumed.standardCursor,
+      'Deserialized iterator must retain the serialized cursor handle so resume reuses it instead of re-opening'
+    );
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testSerializedPaginationCursorHandleSurvivesRoundTrip() {
+    // Same reuse-not-reopen contract as the standard cursor, for pagination.
+    Test.startTest();
+    ChunkedCursorIterator iter = new ChunkedCursorIterator(
+      new ChunkedCursorOptions('SELECT Id, Name FROM Account ORDER BY Name', 2)
+        .setSObjectType(Account.SObjectType)
+        .setCursorType(ChunkedCursorIterator.CursorType.PAGINATION)
+    );
+    iter.next(); // position -> 2, chunks remain so the cursor stays open
+    System.assertNotEquals(
+      null,
+      iter.paginationCursor,
+      'Pagination cursor should be active while chunks remain'
+    );
+
+    ChunkedCursorIterator resumed = (ChunkedCursorIterator) JSON.deserialize(
+      JSON.serialize(iter),
+      ChunkedCursorIterator.class
+    );
+
+    System.assertNotEquals(
+      null,
+      resumed.paginationCursor,
+      'Deserialized iterator must retain the pagination cursor handle so resume reuses it instead of re-opening'
+    );
     Test.stopTest();
   }
 
