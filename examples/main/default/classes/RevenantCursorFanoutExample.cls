@@ -151,7 +151,7 @@ public inherited sharing class RevenantCursorFanoutExample {
    * @description Step to spawn a parallel child ProcessCursorChunkWorkflow for each offset chunk,
    * suspend parent execution, and join results upon wake-up.
    */
-  public class CursorFanoutStep implements WorkflowStep {
+  public inherited sharing class CursorFanoutStep implements WorkflowStep {
     /**
      * @description Executes the fanout step.
      * @param ctx The step context.
@@ -168,68 +168,91 @@ public inherited sharing class RevenantCursorFanoutExample {
 
       // First run: spawn chunks
       if (childInstances.isEmpty()) {
-        ctx.reportProgress(40.0, 'Fanning out parallel child chunks');
-        if (String.isBlank(ctx.previousStepOutput)) {
-          return StepResult.complete(
-            null,
-            new Map<String, Object>{
-              'error' => 'No output received from CursorQueryStep'
-            }
-          );
-        }
-
-        Map<String, Object> queryData = (Map<String, Object>) JSON.deserializeUntyped(
-          ctx.previousStepOutput
-        );
-        Integer totalRecords = (Integer) queryData.get('totalRecords');
-        String serializedCursor = (String) queryData.get('serializedCursor');
-        Integer chunkSize = (Integer) queryData.get('chunkSize');
-
-        if (totalRecords == 0) {
-          return StepResult.complete(
-            null,
-            new Map<String, Object>{
-              'totalProcessed' => 0,
-              'results' => new List<Object>()
-            }
-          );
-        }
-
-        // Deserialize standard cursor and partition it using ChunkedCursorIterator
-        ChunkedCursorIterator iterator = (ChunkedCursorIterator) JSON.deserialize(
-          serializedCursor,
-          ChunkedCursorIterator.class
-        );
-        List<ChunkedCursorIterator> partitions = iterator.partition();
-
-        // Spawn child workflows in increments of chunkSize
-        for (ChunkedCursorIterator partition : partitions) {
-          Integer offset = partition.getPosition();
-          // Create child workflow input
-          Map<String, Object> childInput = new Map<String, Object>{
-            'serializedCursor' => JSON.serialize(partition),
-            'limit' => chunkSize
-          };
-
-          // Generate unique correlation key for this chunk
-          String childKey =
-            'CursorChunk_' +
-            offset +
-            '_' +
-            ctx.workflowInstanceId;
-
-          // Start child workflow
-          WorkflowEngine.start(
-            'RevenantCursorFanoutExample.ProcessCursorChunkWorkflow',
-            childKey,
-            childInput,
-            ctx.workflowInstanceId
-          );
-        }
-
-        return StepResult.suspend();
+        return spawnChunks(ctx);
       }
 
+      // Subsequent runs: aggregate results
+      return aggregateChunks(ctx, childInstances);
+    }
+
+    /**
+     * @description Spawns child workflows for each partitioned chunk.
+     * @param ctx The step context.
+     * @return The step result.
+     */
+    private StepResult spawnChunks(StepContext ctx) {
+      ctx.reportProgress(40.0, 'Fanning out parallel child chunks');
+      if (String.isBlank(ctx.previousStepOutput)) {
+        return StepResult.complete(
+          null,
+          new Map<String, Object>{
+            'error' => 'No output received from CursorQueryStep'
+          }
+        );
+      }
+
+      Map<String, Object> queryData = (Map<String, Object>) JSON.deserializeUntyped(
+        ctx.previousStepOutput
+      );
+      Integer totalRecords = (Integer) queryData.get('totalRecords');
+      String serializedCursor = (String) queryData.get('serializedCursor');
+      Integer chunkSize = (Integer) queryData.get('chunkSize');
+
+      if (totalRecords == 0) {
+        return StepResult.complete(
+          null,
+          new Map<String, Object>{
+            'totalProcessed' => 0,
+            'results' => new List<Object>()
+          }
+        );
+      }
+
+      // Deserialize standard cursor and partition it using ChunkedCursorIterator
+      ChunkedCursorIterator iterator = (ChunkedCursorIterator) JSON.deserialize(
+        serializedCursor,
+        ChunkedCursorIterator.class
+      );
+      List<ChunkedCursorIterator> partitions = iterator.partition();
+
+      // Spawn child workflows in increments of chunkSize
+      for (ChunkedCursorIterator partition : partitions) {
+        Integer offset = partition.getPosition();
+        // Create child workflow input
+        Map<String, Object> childInput = new Map<String, Object>{
+          'serializedCursor' => JSON.serialize(partition),
+          'limit' => chunkSize
+        };
+
+        // Generate unique correlation key for this chunk
+        String childKey =
+          'CursorChunk_' +
+          offset +
+          '_' +
+          ctx.workflowInstanceId;
+
+        // Start child workflow
+        WorkflowEngine.start(
+          'RevenantCursorFanoutExample.ProcessCursorChunkWorkflow',
+          childKey,
+          childInput,
+          ctx.workflowInstanceId
+        );
+      }
+
+      return StepResult.suspend();
+    }
+
+    /**
+     * @description Checks completion and aggregates child workflow outputs.
+     * @param ctx The step context.
+     * @param childInstances The child instances to aggregate.
+     * @return The step result.
+     */
+    private StepResult aggregateChunks(
+      StepContext ctx,
+      List<Workflow_Instance__c> childInstances
+    ) {
       // Check if all children have finished
       Boolean allCompleted = true;
       for (Workflow_Instance__c child : childInstances) {

@@ -3,6 +3,7 @@
  * Supports both Database.Cursor (up to 50M rows) and Database.PaginationCursor (up to 100K rows).
  * Implements Iterable and Iterator for seamless use in for-each loops, queueables, and parallel workflows.
  */
+@SuppressWarnings('PMD.CognitiveComplexity, PMD.CyclomaticComplexity')
 public inherited sharing class ChunkedCursorIterator implements Iterable<List<SObject>>, Iterator<List<SObject>> {
   public enum CursorType {
     STANDARD,
@@ -46,11 +47,29 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
    * @description Configuration options for constructing a ChunkedCursorIterator.
    */
   public class Options {
+    /**
+     * @description The dynamic SOQL query string.
+     */
     public String query { get; private set; }
+    /**
+     * @description The size of each chunk.
+     */
     public Integer chunkSize { get; private set; }
+    /**
+     * @description The map of bind variables for dynamic query execution.
+     */
     public Map<String, Object> bindMap { get; private set; }
+    /**
+     * @description The access level context (USER_MODE or SYSTEM_MODE).
+     */
     public System.AccessLevel accessLevel { get; private set; }
+    /**
+     * @description The type of database cursor to utilize.
+     */
     public CursorType selectedCursorType { get; private set; }
+    /**
+     * @description The concrete SObject type token for returned lists.
+     */
     public Schema.SObjectType sObjectType { get; private set; }
 
     /**
