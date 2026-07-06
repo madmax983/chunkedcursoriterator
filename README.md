@@ -197,3 +197,14 @@ Exposed directly as properties (`get; private set;`), not accessor methods:
 - `position`: The current pointer index (`Integer`).
 - `chunkSize`: The configured chunk size (`Integer`).
 - `totalRecords`: The total number of records matching the query (`Integer`).
+
+---
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
