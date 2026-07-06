@@ -132,10 +132,10 @@ public inherited sharing class RevenantCursorFanoutExample {
 
       // Initialize ChunkedCursorIterator
       ChunkedCursorIterator iterator = new ChunkedCursorIterator(
-        new ChunkedCursorIterator.Options(query, chunkSize)
+        new ChunkedCursorOptions(query, chunkSize)
           .setSObjectType(Account.SObjectType)
       );
-      Integer totalRecords = iterator.getTotalRecords();
+      Integer totalRecords = iterator.totalRecords;
       String serializedCursor = JSON.serialize(iterator);
 
       Map<String, Object> output = new Map<String, Object>{
@@ -217,7 +217,7 @@ public inherited sharing class RevenantCursorFanoutExample {
 
       // Spawn child workflows in increments of chunkSize
       for (ChunkedCursorIterator partition : partitions) {
-        Integer offset = partition.getPosition();
+        Integer offset = partition.position;
         // Create child workflow input
         Map<String, Object> childInput = new Map<String, Object>{
           'serializedCursor' => JSON.serialize(partition),
@@ -320,7 +320,7 @@ public inherited sharing class RevenantCursorFanoutExample {
         ChunkedCursorIterator.class
       );
 
-      Integer offset = partition.getPosition();
+      Integer offset = partition.position;
 
       // Fetch the records using the iterator!
       List<SObject> records = partition.hasNext()

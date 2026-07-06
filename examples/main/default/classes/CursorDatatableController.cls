@@ -37,7 +37,7 @@ public with sharing class CursorDatatableController {
     }
 
     ChunkedCursorIterator iterator = new ChunkedCursorIterator(
-      new ChunkedCursorIterator.Options(query, chunkSize)
+      new ChunkedCursorOptions(query, chunkSize)
         .setAccessLevel(System.AccessLevel.USER_MODE)
         .setSObjectType(token)
     );
@@ -46,7 +46,7 @@ public with sharing class CursorDatatableController {
     result.records = iterator.hasNext() ? iterator.next() : new List<SObject>();
     result.iteratorState = JSON.serialize(iterator);
     result.hasMore = iterator.hasNext();
-    result.totalRecords = iterator.getTotalRecords();
+    result.totalRecords = iterator.totalRecords;
     return result;
   }
 
@@ -70,7 +70,7 @@ public with sharing class CursorDatatableController {
     result.records = iterator.hasNext() ? iterator.next() : new List<SObject>();
     result.iteratorState = JSON.serialize(iterator);
     result.hasMore = iterator.hasNext();
-    result.totalRecords = iterator.getTotalRecords();
+    result.totalRecords = iterator.totalRecords;
     return result;
   }
 }

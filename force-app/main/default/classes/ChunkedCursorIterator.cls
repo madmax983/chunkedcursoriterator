@@ -3,24 +3,43 @@
  * Supports both Database.Cursor (up to 50M rows) and Database.PaginationCursor (up to 100K rows).
  * Implements Iterable and Iterator for seamless use in for-each loops, queueables, and parallel workflows.
  */
-@SuppressWarnings('PMD.CognitiveComplexity, PMD.CyclomaticComplexity')
-public inherited sharing class ChunkedCursorIterator implements Iterable<List<SObject>>, Iterator<List<SObject>> {
+public inherited sharing class ChunkedCursorIterator implements Iterable<List<SObject>>, Iterator<List<SObject>>, ChunkedCursorHelper.CursorFetcher {
   public enum CursorType {
     STANDARD,
     PAGINATION
   }
 
-  // Core state variables (serialized)
-  private CursorType selectedCursorType;
-  private Integer position;
-  private Integer chunkSize;
-  private Integer totalRecords;
+  /**
+   * @description The type of database cursor selected (STANDARD or PAGINATION).
+   */
+  public CursorType selectedCursorType { get; private set; }
+  /**
+   * @description The current position pointer index.
+   */
+  public Integer position { get; private set; }
+  /**
+   * @description The size of each chunk.
+   */
+  public Integer chunkSize { get; private set; }
+  /**
+   * @description The total number of records matching the query.
+   */
+  public Integer totalRecords { get; private set; }
 
   // Active database cursor state (transient as cursor resources cannot span transactions/serialization)
+  /**
+   * @description The active standard Database.Cursor.
+   */
   @TestVisible
-  private transient Database.Cursor standardCursor;
+  private transient Database.Cursor standardCursor { get; private set; }
+  /**
+   * @description The active Database.PaginationCursor.
+   */
   @TestVisible
-  private transient Database.PaginationCursor paginationCursor;
+  private transient Database.PaginationCursor paginationCursor {
+    get;
+    private set;
+  }
   @TestVisible
   private transient Integer nextPaginationIndex;
 
@@ -42,93 +61,6 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
   // ==========================================
   // Inner Classes (Configuration & State)
   // ==========================================
-
-  /**
-   * @description Configuration options for constructing a ChunkedCursorIterator.
-   */
-  public class Options {
-    /**
-     * @description The dynamic SOQL query string.
-     */
-    public String query { get; private set; }
-    /**
-     * @description The size of each chunk.
-     */
-    public Integer chunkSize { get; private set; }
-    /**
-     * @description The map of bind variables for dynamic query execution.
-     */
-    public Map<String, Object> bindMap { get; private set; }
-    /**
-     * @description The access level context (USER_MODE or SYSTEM_MODE).
-     */
-    public System.AccessLevel accessLevel { get; private set; }
-    /**
-     * @description The type of database cursor to utilize.
-     */
-    public CursorType selectedCursorType { get; private set; }
-    /**
-     * @description The concrete SObject type token for returned lists.
-     */
-    public Schema.SObjectType sObjectType { get; private set; }
-
-    /**
-     * @description Basic constructor for Options with required fields.
-     * @param query The dynamic SOQL query.
-     * @param chunkSize The size of each chunk.
-     */
-    public Options(String query, Integer chunkSize) {
-      if (chunkSize == null || chunkSize <= 0) {
-        throw new System.IllegalArgumentException(
-          'Chunk size must be greater than zero.'
-        );
-      }
-      this.query = query;
-      this.chunkSize = chunkSize;
-      this.accessLevel = System.AccessLevel.USER_MODE;
-      this.selectedCursorType = ChunkedCursorIterator.CursorType.STANDARD;
-    }
-
-    /**
-     * @description Sets the bind map variables for query execution.
-     * @param bindMap The bind variable map.
-     * @return The current Options instance.
-     */
-    public Options setBindMap(Map<String, Object> bindMap) {
-      this.bindMap = bindMap;
-      return this;
-    }
-
-    /**
-     * @description Sets the Salesforce execution AccessLevel context.
-     * @param accessLevel The access level context (USER_MODE or SYSTEM_MODE).
-     * @return The current Options instance.
-     */
-    public Options setAccessLevel(System.AccessLevel accessLevel) {
-      this.accessLevel = accessLevel;
-      return this;
-    }
-
-    /**
-     * @description Sets the database cursor type.
-     * @param cursorType The cursor type (STANDARD or PAGINATION).
-     * @return The current Options instance.
-     */
-    public Options setCursorType(CursorType cursorType) {
-      this.selectedCursorType = cursorType;
-      return this;
-    }
-
-    /**
-     * @description Sets the SObject type for returned results, ensuring type safety.
-     * @param sObjectType The SObject type token (e.g. Account.SObjectType).
-     * @return The current Options instance.
-     */
-    public Options setSObjectType(Schema.SObjectType sObjectType) {
-      this.sObjectType = sObjectType;
-      return this;
-    }
-  }
 
   /**
    * @description Private class to group parameters for partitioned iterator recreation.
@@ -155,14 +87,14 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
    * @param chunkSize The record count limit per chunk.
    */
   public ChunkedCursorIterator(String query, Integer chunkSize) {
-    this(new Options(query, chunkSize));
+    this(new ChunkedCursorOptions(query, chunkSize));
   }
 
   /**
    * @description Advanced constructor to initialize the cursor iterator with options.
    * @param options The configuration Options instance.
    */
-  public ChunkedCursorIterator(Options options) {
+  public ChunkedCursorIterator(ChunkedCursorOptions options) {
     if (options == null) {
       throw new System.IllegalArgumentException('Options cannot be null.');
     }
@@ -170,21 +102,16 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
     this.bindMap = options.bindMap;
     this.chunkSize = options.chunkSize;
     this.operationAccessLevel = options.accessLevel;
-    if (options.accessLevel != null) {
-      String str = String.valueOf(options.accessLevel);
-      this.accessLevelMode = str.contains('SYSTEM_MODE')
-        ? 'SYSTEM_MODE'
-        : 'USER_MODE';
-      this.permissionSetId = extractPermissionSetId(str);
-    } else {
-      this.accessLevelMode = 'USER_MODE';
-      this.permissionSetId = null;
-    }
+    this.accessLevelMode = ChunkedCursorOptions.getAccessLevelMode(
+      options.accessLevel
+    );
+    this.permissionSetId = ChunkedCursorOptions.extractPermissionSetId(
+      options.accessLevel
+    );
     this.selectedCursorType = options.selectedCursorType;
-    this.sObjectTypeName = (options.sObjectType != null)
-      ? options.sObjectType.getDescribe(SObjectDescribeOptions.DEFERRED)
-          .getName()
-      : null;
+    this.sObjectTypeName = ChunkedCursorOptions.getSObjectTypeName(
+      options.sObjectType
+    );
     this.position = 0;
 
     initCursor();
@@ -206,16 +133,12 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
     this.query = params.query;
     this.bindMap = params.bindMap;
     this.operationAccessLevel = params.selectedAccessLevel;
-    if (params.selectedAccessLevel != null) {
-      String str = String.valueOf(params.selectedAccessLevel);
-      this.accessLevelMode = str.contains('SYSTEM_MODE')
-        ? 'SYSTEM_MODE'
-        : 'USER_MODE';
-      this.permissionSetId = extractPermissionSetId(str);
-    } else {
-      this.accessLevelMode = 'USER_MODE';
-      this.permissionSetId = null;
-    }
+    this.accessLevelMode = ChunkedCursorOptions.getAccessLevelMode(
+      params.selectedAccessLevel
+    );
+    this.permissionSetId = ChunkedCursorOptions.extractPermissionSetId(
+      params.selectedAccessLevel
+    );
     this.sObjectTypeName = params.sObjectTypeName;
   }
 
@@ -223,74 +146,16 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
   // Fluent Configuration & Helpers
   // ==========================================
 
-  /**
-   * @description Sets the SObject type for the returned list, ensuring type safety.
-   * @param sObjectType The SObject type token (e.g. Account.SObjectType).
-   * @return The same ChunkedCursorIterator instance.
-   */
-  public ChunkedCursorIterator setSObjectType(Schema.SObjectType sObjectType) {
-    this.sObjectTypeName = (sObjectType != null)
-      ? sObjectType.getDescribe(SObjectDescribeOptions.DEFERRED).getName()
-      : null;
-    return this;
-  }
-
-  /**
-   * @description Gets the configured SObject type.
-   * @return The SObjectType or null.
-   */
-  public Schema.SObjectType getSObjectType() {
-    if (this.sObjectTypeName == null) {
-      return null;
-    }
-    return Schema.getGlobalDescribe().get(this.sObjectTypeName);
-  }
-
   // Resolves access level mode string to System.AccessLevel enum, preserving custom Permission Sets if supported
   @TestVisible
   private System.AccessLevel getAccessLevel() {
-    if (this.operationAccessLevel != null) {
-      return this.operationAccessLevel;
-    }
-    System.AccessLevel baseLevel = (this.accessLevelMode == 'SYSTEM_MODE')
-      ? System.AccessLevel.SYSTEM_MODE
-      : System.AccessLevel.USER_MODE;
-    if (String.isNotBlank(this.permissionSetId)) {
-      try {
-        this.operationAccessLevel = baseLevel.withPermissionSetId(
-          this.permissionSetId
-        );
-      } catch (Exception e) {
-        // Fallback to base mode if the environment does not support/enable permission set access levels (e.g. scratch org tests)
-        this.operationAccessLevel = baseLevel;
-      }
-    } else {
-      this.operationAccessLevel = baseLevel;
+    if (this.operationAccessLevel == null) {
+      this.operationAccessLevel = ChunkedCursorOptions.resolveAccessLevel(
+        this.accessLevelMode,
+        this.permissionSetId
+      );
     }
     return this.operationAccessLevel;
-  }
-
-  private static String extractPermissionSetId(String str) {
-    if (String.isBlank(str)) {
-      return null;
-    }
-    Integer idx = str.indexOfIgnoreCase('0PS');
-    if (idx == -1) {
-      return null;
-    }
-    if (str.length() >= idx + 18) {
-      String potentialId = str.substring(idx, idx + 18);
-      if (potentialId.isAlphanumeric()) {
-        return potentialId;
-      }
-    }
-    if (str.length() >= idx + 15) {
-      String potentialId = str.substring(idx, idx + 15);
-      if (potentialId.isAlphanumeric()) {
-        return potentialId;
-      }
-    }
-    return null;
   }
 
   // ==========================================
@@ -300,50 +165,20 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
   private void initCursor() {
     System.AccessLevel accessLevel = getAccessLevel();
     if (this.selectedCursorType == CursorType.PAGINATION) {
-      initPaginationCursor(accessLevel);
-    } else {
-      initStandardCursor(accessLevel);
-    }
-  }
-
-  private void initPaginationCursor(System.AccessLevel accessLevel) {
-    if (
-      Limits.getApexPaginationCursors() >=
-      Limits.getLimitApexPaginationCursors()
-    ) {
-      throw new System.LimitException(
-        'Apex Pagination Cursors daily limit reached.'
-      );
-    }
-    if (this.bindMap != null && !this.bindMap.isEmpty()) {
-      this.paginationCursor = Database.getPaginationCursorWithBinds(
+      this.paginationCursor = ChunkedCursorHelper.createPaginationCursor(
         this.query,
         this.bindMap,
         accessLevel
       );
+      this.totalRecords = this.paginationCursor.getNumRecords();
     } else {
-      this.paginationCursor = Database.getPaginationCursor(
-        this.query,
-        accessLevel
-      );
-    }
-    this.totalRecords = this.paginationCursor.getNumRecords();
-  }
-
-  private void initStandardCursor(System.AccessLevel accessLevel) {
-    if (Limits.getApexCursors() >= Limits.getLimitApexCursors()) {
-      throw new System.LimitException('Apex Cursors daily limit reached.');
-    }
-    if (this.bindMap != null && !this.bindMap.isEmpty()) {
-      this.standardCursor = Database.getCursorWithBinds(
+      this.standardCursor = ChunkedCursorHelper.createStandardCursor(
         this.query,
         this.bindMap,
         accessLevel
       );
-    } else {
-      this.standardCursor = Database.getCursor(this.query, accessLevel);
+      this.totalRecords = this.standardCursor.getNumRecords();
     }
-    this.totalRecords = this.standardCursor.getNumRecords();
   }
 
   // ==========================================
@@ -363,11 +198,9 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
    * @return True if there are remaining records and iteration limits allow, false otherwise.
    */
   public Boolean hasNext() {
-    if (this.iterationsRemaining != null && this.iterationsRemaining <= 0) {
-      close();
-      return false;
-    }
-    Boolean hasMore = this.position < this.totalRecords;
+    Boolean hasMore =
+      (this.iterationsRemaining == null || this.iterationsRemaining > 0) &&
+      this.position < this.totalRecords;
     if (!hasMore) {
       close();
     }
@@ -379,10 +212,6 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
    * @return A list containing the next chunk of SObjects.
    */
   public List<SObject> next() {
-    // Ensure cursor is initialized before checking hasNext() and calculating fetch size.
-    // Handles post-deserialization and explicit closure states.
-    ensureCursorInitialized();
-
     if (!hasNext()) {
       throw new System.NoSuchElementException('Iterator has no more elements.');
     }
@@ -404,7 +233,7 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
       close();
     }
 
-    return resultList != null ? resultList : new List<SObject>();
+    return resultList;
   }
 
   /**
@@ -414,64 +243,18 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
    * @return The list of fetched SObjects.
    */
   private List<SObject> fetchRecordsWithSelfHealing(Integer fetchSize) {
-    List<SObject> records = null;
-    Integer attempts = 0;
-    final Integer maxRetries = 3;
-
-    while (true) {
-      try {
-        records = fetchPageWithCursor(this.position, fetchSize);
-        break; // Success
-      } catch (System.TransientCursorException e) {
-        attempts++;
-        if (attempts >= maxRetries) {
-          throw e; // Rethrow if retries exhausted
-        }
-      } catch (Exception e) {
-        if (isExpiredOrFatalCursorException(e) && this.query != null) {
-          records = attemptSelfHealing(e);
-          break;
-        }
-        throw e;
-      }
-    }
-    return records;
+    return ChunkedCursorHelper.fetchWithSelfHealing(
+      this,
+      this.position,
+      fetchSize
+    );
   }
 
-  /**
-   * @description Attempts self-healing by re-initializing the cursor and querying records.
-   * @param originalException The original exception that triggered the self-healing.
-   * @return The list of fetched SObjects.
-   */
-  private List<SObject> attemptSelfHealing(Exception originalException) {
-    try {
-      initCursor(); // Re-open query cursor and update totalRecords
-      if (this.position >= this.totalRecords) {
-        return new List<SObject>();
-      }
-      // Recalculate fetchSize in case of shrinking database records
-      Integer newFetchSize = Math.min(
-        this.chunkSize,
-        this.totalRecords - this.position
-      );
-      return fetchPageWithCursor(this.position, newFetchSize);
-    } catch (Exception healingEx) {
-      throw originalException; // Rethrow original exception if recovery fails
-    }
-  }
-
-  /**
-   * @description Advances the cursor position pointer and updates iteration metrics.
-   * @param fetchSize The size of the chunk fetched.
-   */
   private void advancePosition(Integer fetchSize) {
-    if (this.selectedCursorType == CursorType.PAGINATION) {
-      this.position = this.nextPaginationIndex != null
-        ? this.nextPaginationIndex
-        : (this.position + fetchSize);
-    } else {
-      this.position += fetchSize;
-    }
+    this.position = (this.selectedCursorType == CursorType.PAGINATION &&
+      this.nextPaginationIndex != null)
+      ? this.nextPaginationIndex
+      : (this.position + fetchSize);
 
     if (this.iterationsRemaining != null) {
       this.iterationsRemaining--;
@@ -484,65 +267,7 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
    * @return A list cast to the correct SObject concrete type.
    */
   private List<SObject> castToTypedList(List<SObject> records) {
-    if (this.sObjectTypeName == null || records == null) {
-      return records;
-    }
-    List<SObject> typedList = (List<SObject>) System.Type.forName(
-        'List<' + this.sObjectTypeName + '>'
-      )
-      .newInstance();
-    typedList.addAll(records);
-    return typedList;
-  }
-
-  // Ensures the cursor is initialized (particularly after deserialization where transient fields are null)
-  private void ensureCursorInitialized() {
-    if (
-      this.selectedCursorType == CursorType.PAGINATION &&
-      this.paginationCursor == null
-    ) {
-      initCursor();
-    } else if (
-      this.selectedCursorType == CursorType.STANDARD &&
-      this.standardCursor == null
-    ) {
-      initCursor();
-    }
-  }
-
-  // Helper method to route record fetching, with lazy auto-initialization for deserialized states
-  private List<SObject> fetchPageWithCursor(Integer start, Integer size) {
-    if (this.selectedCursorType == CursorType.PAGINATION) {
-      if (this.paginationCursor == null) {
-        initCursor();
-      }
-      Database.CursorFetchResult fetchResult = this.paginationCursor.fetchPage(
-        start,
-        size
-      );
-      if (fetchResult != null) {
-        Integer nextIdx = fetchResult.getNextIndex();
-        this.nextPaginationIndex = (nextIdx == 0) ? this.totalRecords : nextIdx;
-        return fetchResult.getRecords();
-      }
-      this.nextPaginationIndex = start + size;
-      return new List<SObject>();
-    } else {
-      if (this.standardCursor == null) {
-        initCursor();
-      }
-      return this.standardCursor.fetch(start, size);
-    }
-  }
-
-  // Exception heuristics for expired or corrupt server cursor state
-  private Boolean isExpiredOrFatalCursorException(Exception e) {
-    String typeName = e.getTypeName();
-    String message = e.getMessage();
-    return typeName.contains('FatalCursorException') ||
-      typeName.contains('FatalException') ||
-      typeName.contains('CursorException') ||
-      (message != null && message.containsIgnoreCase('cursor'));
+    return ChunkedCursorHelper.castToTypedList(records, this.sObjectTypeName);
   }
 
   // ==========================================
@@ -561,9 +286,7 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
       );
     }
     this.position = targetPosition;
-    if (this.maxIterations != null) {
-      this.iterationsRemaining = this.maxIterations;
-    }
+    this.iterationsRemaining = this.maxIterations;
   }
 
   /**
@@ -596,43 +319,56 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
   }
 
   /**
-   * @description Explicitly releases the cursor resources to avoid hitting the concurrent cursor limit.
+   * @description Fetches a page of records from the database.
+   * @param position Offset position.
+   * @param size Number of records to fetch.
+   * @return List of SObjects fetched.
    */
-  public void close() {
-    this.standardCursor = null;
-    this.paginationCursor = null;
-  }
-
-  // ==========================================
-  // Getters / State Inspection
-  // ==========================================
-
-  /**
-   * @description Gets the cursor type (STANDARD or PAGINATION).
-   * @return The CursorType.
-   */
-  public CursorType getType() {
-    return this.selectedCursorType;
-  }
-
-  /**
-   * @description Gets the current position pointer index.
-   * @return The current position index.
-   */
-  public Integer getPosition() {
-    return this.position;
-  }
-
-  /**
-   * @description Gets the record chunk size.
-   * @return The chunk size limit.
-   */
-  public Integer getChunkSize() {
-    return this.chunkSize;
+  public List<SObject> fetch(Integer position, Integer size) {
+    if (this.selectedCursorType == CursorType.PAGINATION) {
+      if (this.paginationCursor == null) {
+        initCursor();
+      }
+      ChunkedCursorHelper.PaginationFetchResult result = ChunkedCursorHelper.fetchPaginationPage(
+        this.paginationCursor,
+        position,
+        size
+      );
+      this.nextPaginationIndex = (result.nextIndex == 0)
+        ? this.totalRecords
+        : result.nextIndex;
+      return result.records;
+    }
+    if (this.standardCursor == null) {
+      initCursor();
+    }
+    return this.standardCursor.fetch(position, size);
   }
 
   /**
-   * @description Gets the total records matching the cursor query.
+   * @description Heals the database cursor by re-initializing it.
+   */
+  public void heal() {
+    initCursor();
+  }
+
+  /**
+   * @description Gets the dynamic query string.
+   * @return Dynamic query string.
+   */
+  public String getQuery() {
+    return this.query;
+  }
+
+  @TestVisible
+  private Schema.SObjectType getSObjectType() {
+    return this.sObjectTypeName != null
+      ? Schema.getGlobalDescribe().get(this.sObjectTypeName)
+      : null;
+  }
+
+  /**
+   * @description Gets the total number of records matching the query.
    * @return The total record count.
    */
   public Integer getTotalRecords() {
@@ -640,18 +376,10 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
   }
 
   /**
-   * @description Gets the standard database cursor if active.
-   * @return The standard cursor instance or null.
+   * @description Explicitly releases the cursor resources to avoid hitting the concurrent cursor limit.
    */
-  public Database.Cursor getStandardCursor() {
-    return this.standardCursor;
-  }
-
-  /**
-   * @description Gets the pagination database cursor if active.
-   * @return The pagination cursor instance or null.
-   */
-  public Database.PaginationCursor getPaginationCursor() {
-    return this.paginationCursor;
+  public void close() {
+    this.standardCursor = null;
+    this.paginationCursor = null;
   }
 }
