@@ -209,4 +209,23 @@ public inherited sharing class ChunkedCursorHelper {
     }
     throw lastError;
   }
+
+  /**
+   * @description Computes the standard-cursor forward advance after a fetch,
+   * guaranteeing progress even when a batch comes back empty (e.g. rows deleted
+   * after the cursor snapshot). Extracted from the iterator to keep its
+   * cyclomatic complexity in check.
+   * @param records The records returned by the fetch (may be null).
+   * @param fetchSize The requested fetch size.
+   * @param currentPosition The current position pointer.
+   * @return The new position pointer.
+   */
+  public static Integer standardAdvance(
+    List<SObject> records,
+    Integer fetchSize,
+    Integer currentPosition
+  ) {
+    Integer actualCount = (records != null) ? records.size() : fetchSize;
+    return currentPosition + ((actualCount > 0) ? actualCount : fetchSize);
+  }
 }

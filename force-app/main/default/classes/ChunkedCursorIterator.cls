@@ -277,11 +277,11 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
     ) {
       this.position = this.nextPaginationIndex;
     } else {
-      // Guarantee forward progress. If a standard cursor returns an empty batch
-      // (e.g. rows deleted after the cursor snapshot) advance by the requested
-      // size so iteration cannot stall in an infinite loop.
-      Integer actualCount = (records != null) ? records.size() : fetchSize;
-      this.position += (actualCount > 0) ? actualCount : fetchSize;
+      this.position = ChunkedCursorHelper.standardAdvance(
+        records,
+        fetchSize,
+        this.position
+      );
     }
 
     if (this.iterationsRemaining != null) {

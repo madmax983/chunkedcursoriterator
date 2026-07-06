@@ -224,6 +224,31 @@ private class ChunkedCursorIteratorTest {
   }
 
   @IsTest
+  static void testStandardAdvance() {
+    // Advances by the number of records returned.
+    System.assertEquals(
+      12,
+      ChunkedCursorHelper.standardAdvance(
+        new List<SObject>{ new Account(), new Account() },
+        5,
+        10
+      ),
+      'Advances by record count'
+    );
+    // Empty or null batch advances by fetchSize to guarantee forward progress.
+    System.assertEquals(
+      15,
+      ChunkedCursorHelper.standardAdvance(new List<SObject>(), 5, 10),
+      'Empty batch advances by fetchSize'
+    );
+    System.assertEquals(
+      15,
+      ChunkedCursorHelper.standardAdvance(null, 5, 10),
+      'Null records advances by fetchSize'
+    );
+  }
+
+  @IsTest
   static void testHasRowsLeftReturnsTrueWithAmpleHeadroom() {
     Test.startTest();
     ChunkedCursorIterator iter = new ChunkedCursorIterator(
