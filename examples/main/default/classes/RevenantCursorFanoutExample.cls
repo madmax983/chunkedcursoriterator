@@ -137,6 +137,7 @@ public inherited sharing class RevenantCursorFanoutExample {
       );
       Integer totalRecords = iterator.totalRecords;
       String serializedCursor = JSON.serialize(iterator);
+      iterator.close();
 
       Map<String, Object> output = new Map<String, Object>{
         'totalRecords' => totalRecords,
@@ -215,6 +216,15 @@ public inherited sharing class RevenantCursorFanoutExample {
       );
       List<ChunkedCursorIterator> partitions = iterator.partition();
 
+      // Enforce parallel partition limit to prevent exceeding DML transaction limits
+      if (partitions.size() > 100) {
+        throw new System.LimitException(
+          'Too many partitions generated (' +
+            partitions.size() +
+            '). Parallel partition limit is 100 to prevent DML transaction limits.'
+        );
+      }
+
       // Spawn child workflows in increments of chunkSize
       for (ChunkedCursorIterator partition : partitions) {
         Integer offset = partition.position;
@@ -253,13 +263,22 @@ public inherited sharing class RevenantCursorFanoutExample {
       StepContext ctx,
       List<Workflow_Instance__c> childInstances
     ) {
-      // Check if all children have finished
+      // Check if all children have finished and look for child failures
       Boolean allCompleted = true;
+      Boolean hasFailures = false;
       for (Workflow_Instance__c child : childInstances) {
-        if (child.Status__c != 'Completed' && child.Status__c != 'Failed') {
+        if (child.Status__c == 'Failed') {
+          hasFailures = true;
+        } else if (child.Status__c != 'Completed') {
           allCompleted = false;
           break;
         }
+      }
+
+      if (hasFailures) {
+        return StepResult.fail(
+          'One or more parallel child chunks failed to process.'
+        );
       }
 
       if (!allCompleted) {

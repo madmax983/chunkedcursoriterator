@@ -51,12 +51,34 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
   private String query;
   private Map<String, Object> bindMap;
   @TestVisible
-  private transient System.AccessLevel operationAccessLevel;
+  private transient System.AccessLevel operationAccessLevel {
+    get {
+      if (this.operationAccessLevel == null) {
+        this.operationAccessLevel = ChunkedCursorOptions.resolveAccessLevel(
+          this.accessLevelMode,
+          this.permissionSetId
+        );
+      }
+      return this.operationAccessLevel;
+    }
+    private set;
+  }
   private String accessLevelMode;
   private String permissionSetId;
 
   // Type safety configuration (serialized as String to ensure lightweight and consistent serialization)
   private String sObjectTypeName;
+  private transient System.Type resolvedListType {
+    get {
+      if (this.resolvedListType == null && this.sObjectTypeName != null) {
+        this.resolvedListType = System.Type.forName(
+          'List<' + this.sObjectTypeName + '>'
+        );
+      }
+      return this.resolvedListType;
+    }
+    private set;
+  }
 
   // ==========================================
   // Inner Classes (Configuration & State)
@@ -146,24 +168,8 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
   // Fluent Configuration & Helpers
   // ==========================================
 
-  // Resolves access level mode string to System.AccessLevel enum, preserving custom Permission Sets if supported
-  @TestVisible
-  private System.AccessLevel getAccessLevel() {
-    if (this.operationAccessLevel == null) {
-      this.operationAccessLevel = ChunkedCursorOptions.resolveAccessLevel(
-        this.accessLevelMode,
-        this.permissionSetId
-      );
-    }
-    return this.operationAccessLevel;
-  }
-
-  // ==========================================
-  // Cursor Initialization
-  // ==========================================
-
   private void initCursor() {
-    System.AccessLevel accessLevel = getAccessLevel();
+    System.AccessLevel accessLevel = this.operationAccessLevel;
     if (this.selectedCursorType == CursorType.PAGINATION) {
       this.paginationCursor = ChunkedCursorHelper.createPaginationCursor(
         this.query,
@@ -215,25 +221,21 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
     if (!hasNext()) {
       throw new System.NoSuchElementException('Iterator has no more elements.');
     }
+    try {
+      Integer fetchSize = Math.min(
+        this.chunkSize,
+        this.totalRecords - this.position
+      );
+      List<SObject> records = fetchRecordsWithSelfHealing(fetchSize);
 
-    Integer fetchSize = Math.min(
-      this.chunkSize,
-      this.totalRecords - this.position
-    );
-    List<SObject> records = fetchRecordsWithSelfHealing(fetchSize);
+      advancePosition(records != null ? records.size() : fetchSize);
 
-    // Safety: Always advance position by next index (for pagination) or requested fetchSize (for standard)
-    advancePosition(fetchSize);
-
-    // Construct the typed list if sObjectTypeName is provided
-    List<SObject> resultList = castToTypedList(records);
-
-    // Auto-close cursor when iterator is exhausted to release connection slot
-    if (!hasNext()) {
-      close();
+      return castToTypedList(records);
+    } finally {
+      if (!hasNext()) {
+        close();
+      }
     }
-
-    return resultList;
   }
 
   /**
@@ -250,11 +252,11 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
     );
   }
 
-  private void advancePosition(Integer fetchSize) {
+  private void advancePosition(Integer actualCount) {
     this.position = (this.selectedCursorType == CursorType.PAGINATION &&
       this.nextPaginationIndex != null)
       ? this.nextPaginationIndex
-      : (this.position + fetchSize);
+      : (this.position + actualCount);
 
     if (this.iterationsRemaining != null) {
       this.iterationsRemaining--;
@@ -267,7 +269,7 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
    * @return A list cast to the correct SObject concrete type.
    */
   private List<SObject> castToTypedList(List<SObject> records) {
-    return ChunkedCursorHelper.castToTypedList(records, this.sObjectTypeName);
+    return ChunkedCursorHelper.castToTypedList(records, this.resolvedListType);
   }
 
   // ==========================================
@@ -280,7 +282,9 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
    * @param targetPosition The index to jump to (must be between 0 and totalRecords).
    */
   public void seek(Integer targetPosition) {
-    if (targetPosition < 0 || targetPosition > this.totalRecords) {
+    if (
+      Math.min(Math.max(0, targetPosition), this.totalRecords) != targetPosition
+    ) {
       throw new System.IllegalArgumentException(
         'Seek position must be between 0 and totalRecords.'
       );
@@ -311,7 +315,7 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
       params.maxIterations = 1;
       params.query = this.query;
       params.bindMap = this.bindMap;
-      params.selectedAccessLevel = getAccessLevel();
+      params.selectedAccessLevel = this.operationAccessLevel;
       params.sObjectTypeName = this.sObjectTypeName;
       partitions.add(new ChunkedCursorIterator(params));
     }

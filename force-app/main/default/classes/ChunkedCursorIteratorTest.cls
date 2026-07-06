@@ -313,4 +313,57 @@ private class ChunkedCursorIteratorTest {
     System.assertEquals(true, p1.hasNext()); // Limit reset, now we can fetch again
     Test.stopTest();
   }
+
+  @IsTest
+  static void testCryptographicSigningAndTampering() {
+    Test.startTest();
+    String rawState = '{"query":"SELECT Id FROM Account","position":0}';
+    String signedState = ChunkedCursorHelper.signState(rawState);
+    System.assert(
+      String.isNotBlank(signedState),
+      'Signed state should not be blank'
+    );
+
+    String extracted = ChunkedCursorHelper.verifyAndExtractState(signedState);
+    System.assertEquals(
+      rawState,
+      extracted,
+      'Extracted state should match raw state'
+    );
+
+    // Test Tampering
+    Map<String, Object> envelope = (Map<String, Object>) JSON.deserializeUntyped(
+      signedState
+    );
+    envelope.put('state', '{"query":"SELECT Id FROM Account","position":100}');
+    String tamperedState = JSON.serialize(envelope);
+    try {
+      ChunkedCursorHelper.verifyAndExtractState(tamperedState);
+      System.assert(
+        false,
+        'Should have thrown AuraHandledException on tampered signature'
+      );
+    } catch (AuraHandledException e) {
+      System.assert(true);
+    }
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testResolveAccessLevelSecurityException() {
+    Test.startTest();
+    try {
+      ChunkedCursorOptions.resolveAccessLevel(
+        'USER_MODE',
+        'invalid_permission_set_id'
+      );
+      System.assert(
+        false,
+        'Should have thrown SecurityException on invalid permission set'
+      );
+    } catch (System.SecurityException e) {
+      System.assert(true);
+    }
+    Test.stopTest();
+  }
 }

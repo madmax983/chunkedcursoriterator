@@ -131,7 +131,12 @@ public inherited sharing class ChunkedCursorOptions {
       try {
         return baseLevel.withPermissionSetId(permissionSetId);
       } catch (Exception e) {
-        return baseLevel;
+        throw new System.SecurityException(
+          'Failed to apply specified Permission Set: ' +
+            permissionSetId +
+            '. Error: ' +
+            e.getMessage()
+        );
       }
     }
     return baseLevel;

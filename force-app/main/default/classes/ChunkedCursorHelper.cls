@@ -41,9 +41,6 @@ public inherited sharing class ChunkedCursorHelper {
     Map<String, Object> bindMap,
     System.AccessLevel accessLevel
   ) {
-    if (Limits.getApexCursors() >= Limits.getLimitApexCursors()) {
-      throw new System.LimitException('Apex Cursors daily limit reached.');
-    }
     return (bindMap != null && !bindMap.isEmpty())
       ? Database.getCursorWithBinds(query, bindMap, accessLevel)
       : Database.getCursor(query, accessLevel);
@@ -61,14 +58,6 @@ public inherited sharing class ChunkedCursorHelper {
     Map<String, Object> bindMap,
     System.AccessLevel accessLevel
   ) {
-    if (
-      Limits.getApexPaginationCursors() >=
-      Limits.getLimitApexPaginationCursors()
-    ) {
-      throw new System.LimitException(
-        'Apex Pagination Cursors daily limit reached.'
-      );
-    }
     return (bindMap != null && !bindMap.isEmpty())
       ? Database.getPaginationCursorWithBinds(query, bindMap, accessLevel)
       : Database.getPaginationCursor(query, accessLevel);
@@ -81,31 +70,111 @@ public inherited sharing class ChunkedCursorHelper {
    */
   public static Boolean isExpiredOrFatalCursorException(Exception e) {
     String typeName = e.getTypeName();
+    if (
+      typeName.contains('TransientCursorException') ||
+      typeName.contains('LimitException')
+    ) {
+      return false;
+    }
     String message = e.getMessage();
     return typeName.contains('CursorException') ||
       typeName.contains('FatalException') ||
-      (message != null && message.containsIgnoreCase('cursor'));
+      (message != null &&
+      message.containsIgnoreCase('cursor') &&
+      !message.containsIgnoreCase('limit'));
   }
 
   /**
    * @description Constructs a typed list of SObjects from the raw SObject list if a type is configured.
    * @param records The list of records to cast.
-   * @param sObjectTypeName The SObject API name.
+   * @param listType The cached System.Type for the target list.
    * @return Concrete typed list or generic list.
    */
   public static List<SObject> castToTypedList(
     List<SObject> records,
-    String sObjectTypeName
+    System.Type listType
   ) {
-    if (sObjectTypeName == null || records == null) {
+    if (listType == null || records == null) {
       return records;
     }
-    List<SObject> typedList = (List<SObject>) System.Type.forName(
-        'List<' + sObjectTypeName + '>'
+    try {
+      List<SObject> typedList = (List<SObject>) listType.newInstance();
+      typedList.addAll(records);
+      return typedList;
+    } catch (Exception e) {
+      return records;
+    }
+  }
+
+  /**
+   * @description Cryptographically signs the serialized state using a HMAC-SHA256 signature to prevent client-side tampering.
+   * @param serializedState The raw serialized JSON string of the iterator state.
+   * @return A signed JSON envelope containing the state and its signature.
+   */
+  public static String signState(String serializedState) {
+    if (String.isBlank(serializedState)) {
+      return serializedState;
+    }
+    Blob key = Crypto.generateDigest(
+      'SHA-256',
+      Blob.valueOf(
+        UserInfo.getUserId() +
+          UserInfo.getOrganizationId() +
+          'ChunkedCursorIteratorSaltKey'
       )
-      .newInstance();
-    typedList.addAll(records);
-    return typedList;
+    );
+    Blob data = Blob.valueOf(serializedState);
+    Blob hmac = Crypto.generateMac('hmacSHA256', data, key);
+    String signature = EncodingUtil.base64Encode(hmac);
+
+    Map<String, String> signedEnvelope = new Map<String, String>{
+      'state' => serializedState,
+      'sig' => signature
+    };
+    return JSON.serialize(signedEnvelope);
+  }
+
+  private static void validateSignature(String state, String sig) {
+    if (String.isBlank(state) || String.isBlank(sig)) {
+      throw new System.SecurityException('Malformed state envelope.');
+    }
+    Blob key = Crypto.generateDigest(
+      'SHA-256',
+      Blob.valueOf(
+        UserInfo.getUserId() +
+          UserInfo.getOrganizationId() +
+          'ChunkedCursorIteratorSaltKey'
+      )
+    );
+    Blob hmac = Crypto.generateMac('hmacSHA256', Blob.valueOf(state), key);
+    if (sig != EncodingUtil.base64Encode(hmac)) {
+      throw new System.SecurityException('Signature verification failed.');
+    }
+  }
+
+  /**
+   * @description Verifies the cryptographically signed state envelope and extracts the raw serialized state.
+   * @param signedStateJson The signed JSON envelope containing state and signature.
+   * @return The verified raw serialized state.
+   * @throws AuraHandledException if the signature is invalid or has been tampered with.
+   */
+  public static String verifyAndExtractState(String signedStateJson) {
+    if (String.isBlank(signedStateJson)) {
+      throw new AuraHandledException('Iterator state cannot be null or empty.');
+    }
+    try {
+      Map<String, Object> signedEnvelope = (Map<String, Object>) JSON.deserializeUntyped(
+        signedStateJson
+      );
+      String state = (String) signedEnvelope.get('state');
+      String sig = (String) signedEnvelope.get('sig');
+      validateSignature(state, sig);
+      return state;
+    } catch (Exception e) {
+      throw new AuraHandledException(
+        'Security violation: invalid state signature.'
+      );
+    }
   }
 
   /**

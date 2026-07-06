@@ -44,7 +44,9 @@ public with sharing class CursorDatatableController {
 
     FetchResult result = new FetchResult();
     result.records = iterator.hasNext() ? iterator.next() : new List<SObject>();
-    result.iteratorState = JSON.serialize(iterator);
+    result.iteratorState = ChunkedCursorHelper.signState(
+      JSON.serialize(iterator)
+    );
     result.hasMore = iterator.hasNext();
     result.totalRecords = iterator.totalRecords;
     return result;
@@ -57,18 +59,20 @@ public with sharing class CursorDatatableController {
    */
   @AuraEnabled(cacheable=false)
   public static FetchResult fetchNextChunk(String iteratorState) {
-    if (String.isBlank(iteratorState)) {
-      throw new AuraHandledException('Iterator state cannot be null or empty.');
-    }
+    String verifiedState = ChunkedCursorHelper.verifyAndExtractState(
+      iteratorState
+    );
 
     ChunkedCursorIterator iterator = (ChunkedCursorIterator) JSON.deserialize(
-      iteratorState,
+      verifiedState,
       ChunkedCursorIterator.class
     );
 
     FetchResult result = new FetchResult();
     result.records = iterator.hasNext() ? iterator.next() : new List<SObject>();
-    result.iteratorState = JSON.serialize(iterator);
+    result.iteratorState = ChunkedCursorHelper.signState(
+      JSON.serialize(iterator)
+    );
     result.hasMore = iterator.hasNext();
     result.totalRecords = iterator.totalRecords;
     return result;
