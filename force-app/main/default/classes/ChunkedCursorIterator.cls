@@ -95,7 +95,8 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
     private Integer maxIterations;
     private String query;
     private Map<String, Object> bindMap;
-    private System.AccessLevel selectedAccessLevel;
+    private String accessLevelMode;
+    private String permissionSetId;
     private String sObjectTypeName;
   }
 
@@ -123,13 +124,11 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
     this.query = options.query;
     this.bindMap = options.bindMap;
     this.chunkSize = options.chunkSize;
+    // Store mode + permission set explicitly (no AccessLevel string parsing) so
+    // the execution context is reconstructed faithfully after serialization.
+    this.accessLevelMode = options.accessMode;
+    this.permissionSetId = options.permissionSetId;
     this.operationAccessLevel = options.accessLevel;
-    this.accessLevelMode = ChunkedCursorOptions.getAccessLevelMode(
-      options.accessLevel
-    );
-    this.permissionSetId = ChunkedCursorOptions.extractPermissionSetId(
-      options.accessLevel
-    );
     this.selectedCursorType = options.selectedCursorType;
     this.sObjectTypeName = ChunkedCursorOptions.getSObjectTypeName(
       options.sObjectType
@@ -154,12 +153,11 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
     this.iterationsRemaining = params.maxIterations;
     this.query = params.query;
     this.bindMap = params.bindMap;
-    this.operationAccessLevel = params.selectedAccessLevel;
-    this.accessLevelMode = ChunkedCursorOptions.getAccessLevelMode(
-      params.selectedAccessLevel
-    );
-    this.permissionSetId = ChunkedCursorOptions.extractPermissionSetId(
-      params.selectedAccessLevel
+    this.accessLevelMode = params.accessLevelMode;
+    this.permissionSetId = params.permissionSetId;
+    this.operationAccessLevel = ChunkedCursorOptions.resolveAccessLevel(
+      params.accessLevelMode,
+      params.permissionSetId
     );
     this.sObjectTypeName = params.sObjectTypeName;
   }
@@ -201,6 +199,9 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
 
   /**
    * @description Checks if there are more chunks of records to fetch.
+   * Note: as a side effect, when no more chunks remain this releases the active
+   * cursor (see close()) to avoid holding a concurrent cursor slot. Re-entering
+   * iteration afterwards (e.g. via seek()) transparently re-opens the cursor.
    * @return True if there are remaining records and iteration limits allow, false otherwise.
    */
   public Boolean hasNext() {
@@ -228,7 +229,7 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
       );
       List<SObject> records = fetchRecordsWithSelfHealing(fetchSize);
 
-      advancePosition(records != null ? records.size() : fetchSize);
+      advancePosition(records, fetchSize);
 
       return castToTypedList(records);
     } finally {
@@ -252,11 +253,19 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
     );
   }
 
-  private void advancePosition(Integer actualCount) {
-    this.position = (this.selectedCursorType == CursorType.PAGINATION &&
-      this.nextPaginationIndex != null)
-      ? this.nextPaginationIndex
-      : (this.position + actualCount);
+  private void advancePosition(List<SObject> records, Integer fetchSize) {
+    if (
+      this.selectedCursorType == CursorType.PAGINATION &&
+      this.nextPaginationIndex != null
+    ) {
+      this.position = this.nextPaginationIndex;
+    } else {
+      // Guarantee forward progress. If a standard cursor returns an empty batch
+      // (e.g. rows deleted after the cursor snapshot) advance by the requested
+      // size so iteration cannot stall in an infinite loop.
+      Integer actualCount = (records != null) ? records.size() : fetchSize;
+      this.position += (actualCount > 0) ? actualCount : fetchSize;
+    }
 
     if (this.iterationsRemaining != null) {
       this.iterationsRemaining--;
@@ -315,7 +324,8 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
       params.maxIterations = 1;
       params.query = this.query;
       params.bindMap = this.bindMap;
-      params.selectedAccessLevel = this.operationAccessLevel;
+      params.accessLevelMode = this.accessLevelMode;
+      params.permissionSetId = this.permissionSetId;
       params.sObjectTypeName = this.sObjectTypeName;
       partitions.add(new ChunkedCursorIterator(params));
     }
@@ -366,8 +376,14 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
 
   @TestVisible
   private Schema.SObjectType getSObjectType() {
-    return this.sObjectTypeName != null
-      ? Schema.getGlobalDescribe().get(this.sObjectTypeName)
+    if (this.sObjectTypeName == null) {
+      return null;
+    }
+    // Resolve the token directly instead of Schema.getGlobalDescribe(), which
+    // describes every object in the org and is far more expensive.
+    System.Type resolvedType = System.Type.forName(this.sObjectTypeName);
+    return (resolvedType != null)
+      ? ((SObject) resolvedType.newInstance()).getSObjectType()
       : null;
   }
 

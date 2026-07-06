@@ -102,78 +102,10 @@ public inherited sharing class ChunkedCursorHelper {
       typedList.addAll(records);
       return typedList;
     } catch (Exception e) {
+      // Deliberate best-effort fallback: typing is a convenience, not a
+      // correctness requirement, so a failed cast must never break iteration.
+      // Callers still receive every record as a generic List<SObject>.
       return records;
-    }
-  }
-
-  /**
-   * @description Cryptographically signs the serialized state using a HMAC-SHA256 signature to prevent client-side tampering.
-   * @param serializedState The raw serialized JSON string of the iterator state.
-   * @return A signed JSON envelope containing the state and its signature.
-   */
-  public static String signState(String serializedState) {
-    if (String.isBlank(serializedState)) {
-      return serializedState;
-    }
-    Blob key = Crypto.generateDigest(
-      'SHA-256',
-      Blob.valueOf(
-        UserInfo.getUserId() +
-          UserInfo.getOrganizationId() +
-          'ChunkedCursorIteratorSaltKey'
-      )
-    );
-    Blob data = Blob.valueOf(serializedState);
-    Blob hmac = Crypto.generateMac('hmacSHA256', data, key);
-    String signature = EncodingUtil.base64Encode(hmac);
-
-    Map<String, String> signedEnvelope = new Map<String, String>{
-      'state' => serializedState,
-      'sig' => signature
-    };
-    return JSON.serialize(signedEnvelope);
-  }
-
-  private static void validateSignature(String state, String sig) {
-    if (String.isBlank(state) || String.isBlank(sig)) {
-      throw new System.SecurityException('Malformed state envelope.');
-    }
-    Blob key = Crypto.generateDigest(
-      'SHA-256',
-      Blob.valueOf(
-        UserInfo.getUserId() +
-          UserInfo.getOrganizationId() +
-          'ChunkedCursorIteratorSaltKey'
-      )
-    );
-    Blob hmac = Crypto.generateMac('hmacSHA256', Blob.valueOf(state), key);
-    if (sig != EncodingUtil.base64Encode(hmac)) {
-      throw new System.SecurityException('Signature verification failed.');
-    }
-  }
-
-  /**
-   * @description Verifies the cryptographically signed state envelope and extracts the raw serialized state.
-   * @param signedStateJson The signed JSON envelope containing state and signature.
-   * @return The verified raw serialized state.
-   * @throws AuraHandledException if the signature is invalid or has been tampered with.
-   */
-  public static String verifyAndExtractState(String signedStateJson) {
-    if (String.isBlank(signedStateJson)) {
-      throw new AuraHandledException('Iterator state cannot be null or empty.');
-    }
-    try {
-      Map<String, Object> signedEnvelope = (Map<String, Object>) JSON.deserializeUntyped(
-        signedStateJson
-      );
-      String state = (String) signedEnvelope.get('state');
-      String sig = (String) signedEnvelope.get('sig');
-      validateSignature(state, sig);
-      return state;
-    } catch (Exception e) {
-      throw new AuraHandledException(
-        'Security violation: invalid state signature.'
-      );
     }
   }
 
@@ -255,7 +187,7 @@ public inherited sharing class ChunkedCursorHelper {
   }
 
   /**
-   * @description Internal helper performing fetching with transient cursor retry loop.
+   * @description Internal helper performing fetching with a bounded transient cursor retry loop.
    * @param fetcher The cursor fetcher instance.
    * @param position The position index.
    * @param fetchSize The number of records to fetch.
@@ -266,16 +198,15 @@ public inherited sharing class ChunkedCursorHelper {
     Integer position,
     Integer fetchSize
   ) {
-    Integer attempts = 0;
-    while (true) {
+    final Integer maxAttempts = 3;
+    System.TransientCursorException lastError;
+    for (Integer attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         return fetcher.fetch(position, fetchSize);
       } catch (System.TransientCursorException e) {
-        if (++attempts >= 3) {
-          throw e;
-        }
+        lastError = e;
       }
     }
-    return new List<SObject>();
+    throw lastError;
   }
 }

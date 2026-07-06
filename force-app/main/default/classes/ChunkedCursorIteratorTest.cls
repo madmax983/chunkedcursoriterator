@@ -315,41 +315,6 @@ private class ChunkedCursorIteratorTest {
   }
 
   @IsTest
-  static void testCryptographicSigningAndTampering() {
-    Test.startTest();
-    String rawState = '{"query":"SELECT Id FROM Account","position":0}';
-    String signedState = ChunkedCursorHelper.signState(rawState);
-    System.assert(
-      String.isNotBlank(signedState),
-      'Signed state should not be blank'
-    );
-
-    String extracted = ChunkedCursorHelper.verifyAndExtractState(signedState);
-    System.assertEquals(
-      rawState,
-      extracted,
-      'Extracted state should match raw state'
-    );
-
-    // Test Tampering
-    Map<String, Object> envelope = (Map<String, Object>) JSON.deserializeUntyped(
-      signedState
-    );
-    envelope.put('state', '{"query":"SELECT Id FROM Account","position":100}');
-    String tamperedState = JSON.serialize(envelope);
-    try {
-      ChunkedCursorHelper.verifyAndExtractState(tamperedState);
-      System.assert(
-        false,
-        'Should have thrown AuraHandledException on tampered signature'
-      );
-    } catch (AuraHandledException e) {
-      System.assert(true);
-    }
-    Test.stopTest();
-  }
-
-  @IsTest
   static void testResolveAccessLevelSecurityException() {
     Test.startTest();
     try {
@@ -365,5 +330,257 @@ private class ChunkedCursorIteratorTest {
       System.assert(true);
     }
     Test.stopTest();
+  }
+
+  @IsTest
+  static void testBlankQueryRejected() {
+    Test.startTest();
+    try {
+      new ChunkedCursorOptions('', 2);
+      System.assert(false, 'Blank query should throw IllegalArgumentException');
+    } catch (System.IllegalArgumentException e) {
+      System.assert(true);
+    }
+    try {
+      new ChunkedCursorOptions(null, 2);
+      System.assert(false, 'Null query should throw IllegalArgumentException');
+    } catch (System.IllegalArgumentException e) {
+      System.assert(true);
+    }
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testExplicitAccessModeApi() {
+    Test.startTest();
+    ChunkedCursorOptions opts = new ChunkedCursorOptions(
+      'SELECT Id FROM Account',
+      2
+    );
+    // Default is USER_MODE
+    System.assertEquals('USER_MODE', opts.accessMode);
+    System.assertEquals(System.AccessLevel.USER_MODE, opts.accessLevel);
+
+    opts.setSystemMode();
+    System.assertEquals('SYSTEM_MODE', opts.accessMode);
+    System.assertEquals(System.AccessLevel.SYSTEM_MODE, opts.accessLevel);
+
+    opts.setUserMode();
+    System.assertEquals('USER_MODE', opts.accessMode);
+
+    // Built by concatenation so it is not a hardcoded Id literal; this only
+    // exercises the setter round-trip, which does not validate the value.
+    String fakePermSetId = '0PS' + '000000000000';
+    opts.setPermissionSetId(fakePermSetId);
+    System.assertEquals(fakePermSetId, opts.permissionSetId);
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testResolveAccessLevelBaseModes() {
+    Test.startTest();
+    System.assertEquals(
+      System.AccessLevel.USER_MODE,
+      ChunkedCursorOptions.resolveAccessLevel('USER_MODE', null)
+    );
+    System.assertEquals(
+      System.AccessLevel.SYSTEM_MODE,
+      ChunkedCursorOptions.resolveAccessLevel('SYSTEM_MODE', null)
+    );
+    // Unknown mode falls back to USER_MODE
+    System.assertEquals(
+      System.AccessLevel.USER_MODE,
+      ChunkedCursorOptions.resolveAccessLevel('BOGUS', '')
+    );
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testHealAndClose() {
+    Test.startTest();
+    ChunkedCursorIterator iter = new ChunkedCursorIterator(
+      'SELECT Id, Name FROM Account ORDER BY Name',
+      2
+    );
+
+    List<SObject> chunk1 = iter.next();
+    System.assertEquals(2, chunk1.size());
+
+    // heal() re-opens the cursor without losing position/total
+    iter.heal();
+    System.assertEquals(5, iter.getTotalRecords());
+    System.assertEquals(2, iter.position);
+
+    // close() releases the cursor; re-entering iteration re-opens it lazily
+    iter.close();
+    System.assertEquals(null, iter.standardCursor);
+    System.assertEquals(true, iter.hasNext());
+    List<SObject> chunk2 = iter.next();
+    System.assertEquals(2, chunk2.size());
+    System.assertEquals(4, iter.position);
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testPaginationPartitioning() {
+    Test.startTest();
+    ChunkedCursorIterator iter = new ChunkedCursorIterator(
+      new ChunkedCursorOptions('SELECT Id, Name FROM Account ORDER BY Name', 2)
+        .setCursorType(ChunkedCursorIterator.CursorType.PAGINATION)
+        .setSObjectType(Account.SObjectType)
+    );
+
+    List<ChunkedCursorIterator> partitions = iter.partition();
+    System.assertEquals(3, partitions.size());
+
+    ChunkedCursorIterator p1 = partitions[0];
+    System.assertEquals(0, p1.position);
+    System.assertEquals(true, p1.hasNext());
+    System.assertEquals(2, p1.next().size());
+    System.assertEquals(false, p1.hasNext());
+
+    ChunkedCursorIterator p3 = partitions[2];
+    System.assertEquals(4, p3.position);
+    System.assertEquals(true, p3.hasNext());
+    System.assertEquals(1, p3.next().size());
+    System.assertEquals(false, p3.hasNext());
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testIsExpiredOrFatalCursorHeuristics() {
+    Test.startTest();
+    // Type name containing TransientCursorException is NOT treated as fatal.
+    // (getTypeName() reflects the class name, so naming drives the branch.)
+    System.assertEquals(
+      false,
+      ChunkedCursorHelper.isExpiredOrFatalCursorException(
+        new MyTransientCursorException('transient blip')
+      )
+    );
+    // A message mentioning a limit is excluded even though it mentions cursor.
+    System.assertEquals(
+      false,
+      ChunkedCursorHelper.isExpiredOrFatalCursorException(
+        new CciTestException('cursor limit exceeded')
+      )
+    );
+    // A generic message mentioning cursor IS treated as expired/fatal.
+    System.assertEquals(
+      true,
+      ChunkedCursorHelper.isExpiredOrFatalCursorException(
+        new CciTestException('the cursor has expired')
+      )
+    );
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testFetchWithSelfHealingHealsOnFatalCursorError() {
+    Test.startTest();
+    FakeFetcher fetcher = new FakeFetcher();
+    fetcher.total = 10;
+    fetcher.query = 'SELECT Id FROM Account';
+    fetcher.failuresRemaining = 1;
+    fetcher.errorToThrow = new CciTestException('the cursor has expired');
+    fetcher.payload = new List<SObject>{ new Account(Name = 'Healed') };
+
+    List<SObject> result = ChunkedCursorHelper.fetchWithSelfHealing(
+      fetcher,
+      0,
+      2
+    );
+
+    System.assertEquals(1, result.size(), 'Should return healed payload');
+    System.assertEquals(
+      true,
+      fetcher.healed,
+      'heal() should have been invoked'
+    );
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testFetchWithSelfHealingRethrowsNonCursorError() {
+    Test.startTest();
+    FakeFetcher fetcher = new FakeFetcher();
+    fetcher.total = 10;
+    fetcher.query = 'SELECT Id FROM Account';
+    fetcher.failuresRemaining = 1;
+    fetcher.errorToThrow = new CciTestException('something unrelated');
+
+    try {
+      ChunkedCursorHelper.fetchWithSelfHealing(fetcher, 0, 2);
+      System.assert(false, 'Non-cursor error should propagate');
+    } catch (Exception e) {
+      System.assertEquals('something unrelated', e.getMessage());
+    }
+    System.assertEquals(
+      false,
+      fetcher.healed,
+      'heal() must not run for unrelated errors'
+    );
+    Test.stopTest();
+  }
+
+  /**
+   * @description Generic controllable-message exception for heuristic tests.
+   */
+  private class CciTestException extends Exception {
+  }
+
+  /**
+   * @description Exception whose class name contains 'TransientCursorException'
+   * so getTypeName() drives the transient (non-fatal) heuristic branch.
+   */
+  private class MyTransientCursorException extends Exception {
+  }
+
+  /**
+   * @description In-memory CursorFetcher used to drive the self-healing logic in
+   * ChunkedCursorHelper without a live database cursor.
+   */
+  private class FakeFetcher implements ChunkedCursorHelper.CursorFetcher {
+    public Integer failuresRemaining = 0;
+    public Exception errorToThrow;
+    public List<SObject> payload = new List<SObject>();
+    public Integer total = 0;
+    public String query;
+    public Boolean healed = false;
+
+    /**
+     * @description Returns the canned payload, optionally throwing first to
+     * simulate a configured number of consecutive fetch failures.
+     * @param position The chunk start position (ignored by this fake).
+     * @param size The chunk size (ignored by this fake).
+     * @return The configured payload records.
+     */
+    public List<SObject> fetch(Integer position, Integer size) {
+      if (this.failuresRemaining > 0) {
+        this.failuresRemaining--;
+        throw this.errorToThrow;
+      }
+      return this.payload;
+    }
+    /**
+     * @description Records that a heal was requested.
+     */
+    public void heal() {
+      this.healed = true;
+    }
+    /**
+     * @description Returns the configured total record count.
+     * @return The total records.
+     */
+    public Integer getTotalRecords() {
+      return this.total;
+    }
+    /**
+     * @description Returns the configured query string.
+     * @return The query.
+     */
+    public String getQuery() {
+      return this.query;
+    }
   }
 }
