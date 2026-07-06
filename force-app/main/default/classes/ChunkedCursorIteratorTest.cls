@@ -284,6 +284,7 @@ private class ChunkedCursorIteratorTest {
         }
         
         // Verify seeking resets iterations limits on partitioned iterators
+        iter.seek(0);
         List<ChunkedCursorIterator> partitions = iter.partition();
         ChunkedCursorIterator p1 = partitions[0];
         System.assertEquals(true, p1.hasNext());

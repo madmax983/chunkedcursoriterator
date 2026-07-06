@@ -17,6 +17,7 @@ public inherited sharing class ChunkedCursorIterator
     // Active database cursor state (transient as cursor resources cannot span transactions/serialization)
     @TestVisible private transient Database.Cursor standardCursor;
     @TestVisible private transient Database.PaginationCursor paginationCursor;
+    @TestVisible private transient Integer nextPaginationIndex;
     
     // Iteration limits for partitioning
     private Integer maxIterations;
@@ -25,7 +26,9 @@ public inherited sharing class ChunkedCursorIterator
     // Self-healing metadata (serialized to enable database-level recovery on deserialization/expiration)
     private String query;
     private Map<String, Object> bindMap;
-    private System.AccessLevel operationAccessLevel;
+    @TestVisible private transient System.AccessLevel operationAccessLevel;
+    private String accessLevelMode;
+    private String permissionSetId;
     
     // Type safety configuration (serialized as String to ensure lightweight and consistent serialization)
     private String sObjectTypeName;
@@ -106,6 +109,14 @@ public inherited sharing class ChunkedCursorIterator
         this.bindMap = bindMap;
         this.chunkSize = chunkSize;
         this.operationAccessLevel = selectedAccessLevel;
+        if (selectedAccessLevel != null) {
+            String str = String.valueOf(selectedAccessLevel);
+            this.accessLevelMode = str.contains('SYSTEM_MODE') ? 'SYSTEM_MODE' : 'USER_MODE';
+            this.permissionSetId = extractPermissionSetId(str);
+        } else {
+            this.accessLevelMode = 'USER_MODE';
+            this.permissionSetId = null;
+        }
         this.selectedCursorType = selectedCursorType;
         this.sObjectTypeName = (sObjectType != null) ? sObjectType.getDescribe().getName() : null;
         this.position = 0;
@@ -138,6 +149,14 @@ public inherited sharing class ChunkedCursorIterator
         this.query = query;
         this.bindMap = bindMap;
         this.operationAccessLevel = selectedAccessLevel;
+        if (selectedAccessLevel != null) {
+            String str = String.valueOf(selectedAccessLevel);
+            this.accessLevelMode = str.contains('SYSTEM_MODE') ? 'SYSTEM_MODE' : 'USER_MODE';
+            this.permissionSetId = extractPermissionSetId(str);
+        } else {
+            this.accessLevelMode = 'USER_MODE';
+            this.permissionSetId = null;
+        }
         this.sObjectTypeName = sObjectTypeName;
     }
 
@@ -166,19 +185,62 @@ public inherited sharing class ChunkedCursorIterator
         return Schema.getGlobalDescribe().get(this.sObjectTypeName);
     }
 
+    // Resolves access level mode string to System.AccessLevel enum, preserving custom Permission Sets if supported
+    @TestVisible
+    private System.AccessLevel getAccessLevel() {
+        if (this.operationAccessLevel != null) {
+            return this.operationAccessLevel;
+        }
+        System.AccessLevel baseLevel = (this.accessLevelMode == 'SYSTEM_MODE') ? System.AccessLevel.SYSTEM_MODE : System.AccessLevel.USER_MODE;
+        if (String.isNotBlank(this.permissionSetId)) {
+            try {
+                this.operationAccessLevel = baseLevel.withPermissionSetId(this.permissionSetId);
+            } catch (Exception e) {
+                // Fallback to base mode if the environment does not support/enable permission set access levels (e.g. scratch org tests)
+                this.operationAccessLevel = baseLevel;
+            }
+        } else {
+            this.operationAccessLevel = baseLevel;
+        }
+        return this.operationAccessLevel;
+    }
+
+    private static String extractPermissionSetId(String str) {
+        if (String.isBlank(str)) {
+            return null;
+        }
+        Integer idx = str.indexOfIgnoreCase('0PS');
+        if (idx != -1) {
+            if (str.length() >= idx + 18) {
+                String potentialId = str.substring(idx, idx + 18);
+                if (potentialId.isAlphanumeric()) {
+                    return potentialId;
+                }
+            }
+            if (str.length() >= idx + 15) {
+                String potentialId = str.substring(idx, idx + 15);
+                if (potentialId.isAlphanumeric()) {
+                    return potentialId;
+                }
+            }
+        }
+        return null;
+    }
+
     // ==========================================
     // Cursor Initialization
     // ==========================================
 
     private void initCursor() {
+        System.AccessLevel accessLevel = getAccessLevel();
         if (this.selectedCursorType == CursorType.PAGINATION) {
             if (Limits.getApexPaginationCursors() >= Limits.getLimitApexPaginationCursors()) {
                 throw new System.LimitException('Apex Pagination Cursors daily limit reached.');
             }
             if (this.bindMap != null && !this.bindMap.isEmpty()) {
-                this.paginationCursor = Database.getPaginationCursorWithBinds(this.query, this.bindMap, this.operationAccessLevel);
+                this.paginationCursor = Database.getPaginationCursorWithBinds(this.query, this.bindMap, accessLevel);
             } else {
-                this.paginationCursor = Database.getPaginationCursor(this.query, this.operationAccessLevel);
+                this.paginationCursor = Database.getPaginationCursor(this.query, accessLevel);
             }
             this.totalRecords = this.paginationCursor.getNumRecords();
         } else {
@@ -186,9 +248,9 @@ public inherited sharing class ChunkedCursorIterator
                 throw new System.LimitException('Apex Cursors daily limit reached.');
             }
             if (this.bindMap != null && !this.bindMap.isEmpty()) {
-                this.standardCursor = Database.getCursorWithBinds(this.query, this.bindMap, this.operationAccessLevel);
+                this.standardCursor = Database.getCursorWithBinds(this.query, this.bindMap, accessLevel);
             } else {
-                this.standardCursor = Database.getCursor(this.query, this.operationAccessLevel);
+                this.standardCursor = Database.getCursor(this.query, accessLevel);
             }
             this.totalRecords = this.standardCursor.getNumRecords();
         }
@@ -204,9 +266,14 @@ public inherited sharing class ChunkedCursorIterator
     
     public Boolean hasNext() {
         if (this.iterationsRemaining != null && this.iterationsRemaining <= 0) {
+            close();
             return false;
         }
-        return this.position < this.totalRecords;
+        Boolean hasMore = this.position < this.totalRecords;
+        if (!hasMore) {
+            close();
+        }
+        return hasMore;
     }
 
     public List<SObject> next() {
@@ -255,9 +322,12 @@ public inherited sharing class ChunkedCursorIterator
             }
         }
         
-        // Safety: Always advance position by requested fetchSize to prevent infinite loops,
-        // even if concurrent deletions caused records.size() to be lower.
-        this.position += fetchSize;
+        // Safety: Always advance position by next index (for pagination) or requested fetchSize (for standard)
+        if (this.selectedCursorType == CursorType.PAGINATION) {
+            this.position = this.nextPaginationIndex != null ? this.nextPaginationIndex : (this.position + fetchSize);
+        } else {
+            this.position += fetchSize;
+        }
         
         if (this.iterationsRemaining != null) {
             this.iterationsRemaining--;
@@ -295,7 +365,13 @@ public inherited sharing class ChunkedCursorIterator
                 initCursor();
             }
             Database.CursorFetchResult fetchResult = this.paginationCursor.fetchPage(start, size);
-            return fetchResult != null ? fetchResult.getRecords() : new List<SObject>();
+            if (fetchResult != null) {
+                Integer nextIdx = fetchResult.getNextIndex();
+                this.nextPaginationIndex = (nextIdx == 0) ? this.totalRecords : nextIdx;
+                return fetchResult.getRecords();
+            }
+            this.nextPaginationIndex = start + size;
+            return new List<SObject>();
         } else {
             if (this.standardCursor == null) {
                 initCursor();
@@ -353,7 +429,7 @@ public inherited sharing class ChunkedCursorIterator
                 1, // maxIterations: fetch only this partition chunk
                 this.query,
                 this.bindMap,
-                this.operationAccessLevel,
+                getAccessLevel(),
                 this.sObjectTypeName
             ));
         }
