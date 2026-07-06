@@ -38,15 +38,45 @@ sf project deploy start --target-org <org-alias>
 
 ---
 
+## Configuration: `ChunkedCursorOptions`
+
+Iterators are configured through the `ChunkedCursorOptions` builder. Construct it
+with the required query and chunk size, then chain optional settings. Every setter
+returns the same `ChunkedCursorOptions` instance for fluent chaining.
+
+```apex
+ChunkedCursorOptions options = new ChunkedCursorOptions(
+    'SELECT Id, Name FROM Account ORDER BY Name',
+    200
+  )
+  .setSObjectType(Account.SObjectType)
+  .setUserMode()
+  .setCursorType(ChunkedCursorIterator.CursorType.PAGINATION);
+
+ChunkedCursorIterator iter = new ChunkedCursorIterator(options);
+```
+
+| Builder Method                                              | Description                                                                                                                                                                            |
+| :---------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `new ChunkedCursorOptions(String query, Integer chunkSize)` | Required. Throws `IllegalArgumentException` on a blank query or a chunk size `<= 0`. Defaults to `USER_MODE` and the `STANDARD` cursor type.                                           |
+| `setBindMap(Map<String, Object> bindMap)`                   | Supplies bind variables for the dynamic SOQL query.                                                                                                                                    |
+| `setSObjectType(Schema.SObjectType sObjectType)`            | Enables typed list instantiation (e.g. `List<Account>`) instead of a generic `List<SObject>`.                                                                                          |
+| `setUserMode()`                                             | Runs the query in `USER_MODE` (enforces FLS, CRUD, and sharing). This is the default.                                                                                                  |
+| `setSystemMode()`                                           | Runs the query in `SYSTEM_MODE` (bypasses FLS/CRUD; sharing still applies).                                                                                                            |
+| `setPermissionSetId(String permissionSetId)`                | Applies a permission set on top of the base mode. The serialization-safe way to elevate access.                                                                                        |
+| `setAccessLevel(System.AccessLevel accessLevel)`            | Sets the access level from a prebuilt `System.AccessLevel`. Prefer the mode/permission-set setters, since a permission set embedded in an `AccessLevel` may not survive serialization. |
+| `setCursorType(ChunkedCursorIterator.CursorType type)`      | Selects `STANDARD` or `PAGINATION`. Defaults to `STANDARD`.                                                                                                                            |
+
+---
+
 ## Syntax and Usage Examples
 
 ### Standard Chunked Iteration
 
 ```apex
 ChunkedCursorIterator iter = new ChunkedCursorIterator(
-    'SELECT Id, Name FROM Account ORDER BY Name',
-    200,
-    Account.SObjectType
+    new ChunkedCursorOptions('SELECT Id, Name FROM Account ORDER BY Name', 200)
+        .setSObjectType(Account.SObjectType)
 );
 
 for (List<SObject> chunk : iter) {
@@ -55,14 +85,26 @@ for (List<SObject> chunk : iter) {
 }
 ```
 
+### Minimal Convenience Constructor
+
+For the common case, skip the builder. This defaults to a `STANDARD` cursor in
+`USER_MODE` and returns generic `List<SObject>` chunks.
+
+```apex
+ChunkedCursorIterator iter = new ChunkedCursorIterator(
+    'SELECT Id FROM Contact',
+    1000
+);
+```
+
 ### Configured Pagination Cursor
 
 ```apex
 ChunkedCursorIterator iter = new ChunkedCursorIterator(
-    'SELECT Id, Name, StageName FROM Opportunity',
-    500,
-    AccessLevel.USER_MODE,
-    Opportunity.SObjectType
+    new ChunkedCursorOptions('SELECT Id, Name, StageName FROM Opportunity', 500)
+        .setAccessLevel(AccessLevel.USER_MODE)
+        .setSObjectType(Opportunity.SObjectType)
+        .setCursorType(ChunkedCursorIterator.CursorType.PAGINATION)
 );
 ```
 
@@ -71,9 +113,19 @@ ChunkedCursorIterator iter = new ChunkedCursorIterator(
 ```apex
 Map<String, Object> binds = new Map<String, Object>{ 'minAmount' => 10000 };
 ChunkedCursorIterator iter = new ChunkedCursorIterator(
-    'SELECT Id FROM Opportunity WHERE Amount >= :minAmount',
-    binds,
-    100
+    new ChunkedCursorOptions('SELECT Id FROM Opportunity WHERE Amount >= :minAmount', 100)
+        .setBindMap(binds)
+);
+```
+
+### Elevated Access via Permission Set
+
+```apex
+ChunkedCursorIterator iter = new ChunkedCursorIterator(
+    new ChunkedCursorOptions('SELECT Id, Name FROM Account', 200)
+        .setUserMode()
+        .setPermissionSetId(permissionSetId)
+        .setSObjectType(Account.SObjectType)
 );
 ```
 
@@ -89,6 +141,8 @@ public class AccountProcessingQueueable implements Queueable {
 
   public void execute(QueueableContext context) {
     if (iter.hasNext()) {
+      // Typed cast requires the iterator to have been built with
+      // setSObjectType(Account.SObjectType).
       List<Account> accounts = (List<Account>) iter.next();
       // Execute operations on accounts chunk
 
@@ -121,34 +175,25 @@ for (ChunkedCursorIterator job : parallelJobs) {
 
 ### Constructor Summary
 
-- `ChunkedCursorIterator(String query, Integer chunkSize)`
-- `ChunkedCursorIterator(String query, Map<String, Object> bindMap, Integer chunkSize)`
-- `ChunkedCursorIterator(String query, Integer chunkSize, Schema.SObjectType sObjectType)`
-- `ChunkedCursorIterator(String query, Map<String, Object> bindMap, Integer chunkSize, Schema.SObjectType sObjectType)`
-- `ChunkedCursorIterator(String query, Integer chunkSize, System.AccessLevel accessLevel)`
-- `ChunkedCursorIterator(String query, Map<String, Object> bindMap, Integer chunkSize, System.AccessLevel accessLevel)`
-- `ChunkedCursorIterator(String query, Integer chunkSize, System.AccessLevel accessLevel, Schema.SObjectType sObjectType)`
-- `ChunkedCursorIterator(String query, Map<String, Object> bindMap, Integer chunkSize, System.AccessLevel accessLevel, Schema.SObjectType sObjectType)`
-- `ChunkedCursorIterator(String query, Integer chunkSize, CursorType type)`
-- `ChunkedCursorIterator(String query, Map<String, Object> bindMap, Integer chunkSize, CursorType type)`
-- `ChunkedCursorIterator(String query, Integer chunkSize, CursorType type, Schema.SObjectType sObjectType)`
-- `ChunkedCursorIterator(String query, Map<String, Object> bindMap, Integer chunkSize, CursorType type, Schema.SObjectType sObjectType)`
+- `ChunkedCursorIterator(String query, Integer chunkSize)` — convenience constructor; `STANDARD` cursor, `USER_MODE`, untyped chunks.
+- `ChunkedCursorIterator(ChunkedCursorOptions options)` — full configuration via the [`ChunkedCursorOptions`](#configuration-chunkedcursoroptions) builder.
 
 ### Method Summary
 
-| Method Signature                                 | Return Type                   | Description                                                                                                                                                                    |
-| :----------------------------------------------- | :---------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hasNext()`                                      | `Boolean`                     | Evaluates if the current pointer position is less than the total records, or if iterations remaining is greater than zero.                                                     |
-| `next()`                                         | `List<SObject>`               | Retrieves the next subset of records based on configured chunk size. Automatically calls cursor re-initialization if a cursor error is encountered.                            |
-| `seek(Integer targetPosition)`                   | `void`                        | Resets the pointer position to `targetPosition`. Validates that the index is between `0` and the total record count.                                                           |
-| `partition()`                                    | `List<ChunkedCursorIterator>` | Generates a list of independent iterator instances starting at sequential offsets matching the configured chunk size. Sets the maximum iteration limit of each partition to 1. |
-| `close()`                                        | `void`                        | Nullifies local references to standard and pagination cursor objects.                                                                                                          |
-| `setSObjectType(Schema.SObjectType sObjectType)` | `ChunkedCursorIterator`       | Configures the target type name used for list instantiations.                                                                                                                  |
-| `getSObjectType()`                               | `Schema.SObjectType`          | Resolves and returns the configured `Schema.SObjectType` token.                                                                                                                |
+| Method Signature               | Return Type                   | Description                                                                                                                                                                    |
+| :----------------------------- | :---------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `iterator()`                   | `Iterator<List<SObject>>`     | Returns the iterator instance for use in a `for` loop.                                                                                                                         |
+| `hasNext()`                    | `Boolean`                     | Evaluates if the current pointer position is less than the total records, or if iterations remaining is greater than zero.                                                     |
+| `next()`                       | `List<SObject>`               | Retrieves the next subset of records based on configured chunk size. Automatically re-initializes the cursor if a cursor error is encountered.                                 |
+| `seek(Integer targetPosition)` | `void`                        | Resets the pointer position to `targetPosition`. Validates that the index is between `0` and the total record count.                                                           |
+| `partition()`                  | `List<ChunkedCursorIterator>` | Generates a list of independent iterator instances starting at sequential offsets matching the configured chunk size. Sets the maximum iteration limit of each partition to 1. |
+| `close()`                      | `void`                        | Nullifies local references to standard and pagination cursor objects.                                                                                                          |
 
-### Property Getters
+### Read-Only Properties
 
-- `getType()`: Returns the configured `CursorType` enum (`STANDARD` or `PAGINATION`).
-- `getPosition()`: Returns the current pointer index (`Integer`).
-- `getChunkSize()`: Returns the configured chunk size (`Integer`).
-- `getTotalRecords()`: Returns the total records cache size (`Integer`).
+Exposed directly as properties (`get; private set;`), not accessor methods:
+
+- `selectedCursorType`: The configured `CursorType` enum (`STANDARD` or `PAGINATION`).
+- `position`: The current pointer index (`Integer`).
+- `chunkSize`: The configured chunk size (`Integer`).
+- `totalRecords`: The total number of records matching the query (`Integer`).
