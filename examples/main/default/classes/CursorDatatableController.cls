@@ -1,6 +1,13 @@
 /**
  * @description Controller for the cursorDatatable LWC. Exposes AuraEnabled methods
  * to initialize and fetch paginated record chunks using ChunkedCursorIterator.
+ *
+ * Security model: the iterator runs in USER_MODE, so every fetch enforces the
+ * running user's FLS, CRUD, and sharing. The serialized iterator state is round
+ * tripped through the client as an optimization only; because access is bounded
+ * by USER_MODE, a client that tampers with the state can never read records it
+ * could not already read. Do NOT reuse this pattern with SYSTEM_MODE or an
+ * elevated permission set while trusting client-supplied state.
  */
 public with sharing class CursorDatatableController {
   /**
@@ -31,14 +38,27 @@ public with sharing class CursorDatatableController {
     Integer chunkSize,
     String sObjectType
   ) {
-    Schema.SObjectType token = Schema.getGlobalDescribe().get(sObjectType);
+    // Resolve the token without Schema.getGlobalDescribe() (which describes every
+    // object in the org). Guard against names that resolve to a non-SObject type.
+    Schema.SObjectType token;
+    try {
+      System.Type resolvedType = System.Type.forName(sObjectType);
+      Object instance = (resolvedType != null)
+        ? resolvedType.newInstance()
+        : null;
+      if (instance instanceof SObject) {
+        token = ((SObject) instance).getSObjectType();
+      }
+    } catch (Exception e) {
+      token = null;
+    }
     if (token == null) {
       throw new AuraHandledException('Invalid SObject Type: ' + sObjectType);
     }
 
     ChunkedCursorIterator iterator = new ChunkedCursorIterator(
-      new ChunkedCursorIterator.Options(query, chunkSize)
-        .setAccessLevel(System.AccessLevel.USER_MODE)
+      new ChunkedCursorOptions(query, chunkSize)
+        .setUserMode()
         .setSObjectType(token)
     );
 
@@ -46,7 +66,7 @@ public with sharing class CursorDatatableController {
     result.records = iterator.hasNext() ? iterator.next() : new List<SObject>();
     result.iteratorState = JSON.serialize(iterator);
     result.hasMore = iterator.hasNext();
-    result.totalRecords = iterator.getTotalRecords();
+    result.totalRecords = iterator.totalRecords;
     return result;
   }
 
@@ -70,7 +90,7 @@ public with sharing class CursorDatatableController {
     result.records = iterator.hasNext() ? iterator.next() : new List<SObject>();
     result.iteratorState = JSON.serialize(iterator);
     result.hasMore = iterator.hasNext();
-    result.totalRecords = iterator.getTotalRecords();
+    result.totalRecords = iterator.totalRecords;
     return result;
   }
 }

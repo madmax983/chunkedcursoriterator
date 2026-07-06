@@ -16,20 +16,17 @@ private class ChunkedCursorIteratorTest {
     Test.startTest();
     // Create standard iterator with chunk size 2 and type safety
     ChunkedCursorIterator iter = new ChunkedCursorIterator(
-      new ChunkedCursorIterator.Options(
-          'SELECT Id, Name FROM Account ORDER BY Name',
-          2
-        )
+      new ChunkedCursorOptions('SELECT Id, Name FROM Account ORDER BY Name', 2)
         .setSObjectType(Account.SObjectType)
     );
 
     System.assertEquals(
       ChunkedCursorIterator.CursorType.STANDARD,
-      iter.getType()
+      iter.selectedCursorType
     );
-    System.assertEquals(5, iter.getTotalRecords());
-    System.assertEquals(2, iter.getChunkSize());
-    System.assertEquals(0, iter.getPosition());
+    System.assertEquals(5, iter.totalRecords);
+    System.assertEquals(2, iter.chunkSize);
+    System.assertEquals(0, iter.position);
     System.assertEquals(Account.SObjectType, iter.getSObjectType());
 
     // We expect 3 chunks: size 2, size 2, size 1
@@ -39,24 +36,24 @@ private class ChunkedCursorIteratorTest {
     // Verify type safety: we can successfully cast the chunk directly
     List<Account> accounts1 = (List<Account>) chunk1;
     System.assertNotEquals(null, accounts1);
-    System.assertEquals(2, iter.getPosition());
+    System.assertEquals(2, iter.position);
 
     System.assertEquals(true, iter.hasNext());
     List<SObject> chunk2 = iter.next();
     System.assertEquals(2, chunk2.size());
     List<Account> accounts2 = (List<Account>) chunk2;
     System.assertNotEquals(null, accounts2);
-    System.assertEquals(4, iter.getPosition());
+    System.assertEquals(4, iter.position);
 
     System.assertEquals(true, iter.hasNext());
     List<SObject> chunk3 = iter.next();
     System.assertEquals(1, chunk3.size());
     List<Account> accounts3 = (List<Account>) chunk3;
     System.assertNotEquals(null, accounts3);
-    System.assertEquals(5, iter.getPosition());
+    System.assertEquals(5, iter.position);
 
     System.assertEquals(false, iter.hasNext());
-    System.assertEquals(null, iter.getStandardCursor()); // Auto-close verification
+    System.assertEquals(null, iter.standardCursor); // Auto-close verification
     Test.stopTest();
   }
 
@@ -65,10 +62,7 @@ private class ChunkedCursorIteratorTest {
     Test.startTest();
     // Create pagination iterator with chunk size 2 in USER_MODE
     ChunkedCursorIterator iter = new ChunkedCursorIterator(
-      new ChunkedCursorIterator.Options(
-          'SELECT Id, Name FROM Account ORDER BY Name',
-          2
-        )
+      new ChunkedCursorOptions('SELECT Id, Name FROM Account ORDER BY Name', 2)
         .setAccessLevel(AccessLevel.USER_MODE)
         .setSObjectType(Account.SObjectType)
         .setCursorType(ChunkedCursorIterator.CursorType.PAGINATION)
@@ -76,11 +70,11 @@ private class ChunkedCursorIteratorTest {
 
     System.assertEquals(
       ChunkedCursorIterator.CursorType.PAGINATION,
-      iter.getType()
+      iter.selectedCursorType
     );
-    System.assertEquals(5, iter.getTotalRecords());
-    System.assertEquals(2, iter.getChunkSize());
-    System.assertEquals(0, iter.getPosition());
+    System.assertEquals(5, iter.totalRecords);
+    System.assertEquals(2, iter.chunkSize);
+    System.assertEquals(0, iter.position);
 
     // Iterate through all chunks
     Integer chunkCount = 0;
@@ -94,7 +88,7 @@ private class ChunkedCursorIteratorTest {
 
     System.assertEquals(3, chunkCount);
     System.assertEquals(5, totalProcessed);
-    System.assertEquals(null, iter.getPaginationCursor()); // Auto-close verification
+    System.assertEquals(null, iter.paginationCursor); // Auto-close verification
     Test.stopTest();
   }
 
@@ -103,21 +97,18 @@ private class ChunkedCursorIteratorTest {
     Test.startTest();
     // Create iterator by explicitly specifying Pagination type
     ChunkedCursorIterator iter = new ChunkedCursorIterator(
-      new ChunkedCursorIterator.Options(
-          'SELECT Id, Name FROM Account ORDER BY Name',
-          2
-        )
+      new ChunkedCursorOptions('SELECT Id, Name FROM Account ORDER BY Name', 2)
         .setCursorType(ChunkedCursorIterator.CursorType.PAGINATION)
         .setSObjectType(Account.SObjectType)
     );
 
     System.assertEquals(
       ChunkedCursorIterator.CursorType.PAGINATION,
-      iter.getType()
+      iter.selectedCursorType
     );
-    System.assertEquals(5, iter.getTotalRecords());
-    System.assertEquals(2, iter.getChunkSize());
-    System.assertEquals(0, iter.getPosition());
+    System.assertEquals(5, iter.totalRecords);
+    System.assertEquals(2, iter.chunkSize);
+    System.assertEquals(0, iter.position);
 
     List<SObject> chunk = iter.next();
     System.assertEquals(2, chunk.size());
@@ -128,17 +119,14 @@ private class ChunkedCursorIteratorTest {
   static void testSerializationAndDeserialization() {
     Test.startTest();
     ChunkedCursorIterator iter = new ChunkedCursorIterator(
-      new ChunkedCursorIterator.Options(
-          'SELECT Id, Name FROM Account ORDER BY Name',
-          2
-        )
+      new ChunkedCursorOptions('SELECT Id, Name FROM Account ORDER BY Name', 2)
         .setSObjectType(Account.SObjectType)
     );
 
     // Fetch first chunk
     List<SObject> chunk1 = iter.next();
     System.assertEquals(2, chunk1.size());
-    System.assertEquals(2, iter.getPosition());
+    System.assertEquals(2, iter.position);
 
     // Serialize state (verifies transient fields are handled properly)
     String serialized = JSON.serialize(iter);
@@ -153,10 +141,10 @@ private class ChunkedCursorIteratorTest {
     // Resume iteration on the deserialized instance (verifies auto-healing of null cursors)
     System.assertEquals(
       ChunkedCursorIterator.CursorType.STANDARD,
-      deserializedIter.getType()
+      deserializedIter.selectedCursorType
     );
-    System.assertEquals(2, deserializedIter.getPosition());
-    System.assertEquals(5, deserializedIter.getTotalRecords());
+    System.assertEquals(2, deserializedIter.position);
+    System.assertEquals(5, deserializedIter.totalRecords);
     System.assertEquals(Account.SObjectType, deserializedIter.getSObjectType());
 
     System.assertEquals(true, deserializedIter.hasNext());
@@ -164,12 +152,12 @@ private class ChunkedCursorIteratorTest {
     System.assertEquals(2, chunk2.size());
     List<Account> accounts2 = (List<Account>) chunk2; // verify post-deserialization type safety
     System.assertNotEquals(null, accounts2);
-    System.assertEquals(4, deserializedIter.getPosition());
+    System.assertEquals(4, deserializedIter.position);
 
     System.assertEquals(true, deserializedIter.hasNext());
     List<SObject> chunk3 = deserializedIter.next();
     System.assertEquals(1, chunk3.size());
-    System.assertEquals(5, deserializedIter.getPosition());
+    System.assertEquals(5, deserializedIter.position);
 
     System.assertEquals(false, deserializedIter.hasNext());
     Test.stopTest();
@@ -179,10 +167,7 @@ private class ChunkedCursorIteratorTest {
   static void testParallelPartitioning() {
     Test.startTest();
     ChunkedCursorIterator iter = new ChunkedCursorIterator(
-      new ChunkedCursorIterator.Options(
-          'SELECT Id, Name FROM Account ORDER BY Name',
-          2
-        )
+      new ChunkedCursorOptions('SELECT Id, Name FROM Account ORDER BY Name', 2)
         .setSObjectType(Account.SObjectType)
     );
 
@@ -192,7 +177,7 @@ private class ChunkedCursorIteratorTest {
 
     // Verify partition 1
     ChunkedCursorIterator p1 = partitions[0];
-    System.assertEquals(0, p1.getPosition());
+    System.assertEquals(0, p1.position);
     System.assertEquals(true, p1.hasNext());
     List<SObject> p1Records = p1.next();
     System.assertEquals(2, p1Records.size());
@@ -202,7 +187,7 @@ private class ChunkedCursorIteratorTest {
 
     // Verify partition 3 (the partial chunk)
     ChunkedCursorIterator p3 = partitions[2];
-    System.assertEquals(4, p3.getPosition());
+    System.assertEquals(4, p3.position);
     System.assertEquals(true, p3.hasNext());
     List<SObject> p3Records = p3.next();
     System.assertEquals(1, p3Records.size());
@@ -218,14 +203,14 @@ private class ChunkedCursorIteratorTest {
     };
 
     ChunkedCursorIterator iter = new ChunkedCursorIterator(
-      new ChunkedCursorIterator.Options(
+      new ChunkedCursorOptions(
           'SELECT Id, Name FROM Account WHERE Name LIKE :nameFilter ORDER BY Name',
           2
         )
         .setBindMap(binds)
         .setSObjectType(Account.SObjectType)
     );
-    System.assertEquals(1, iter.getTotalRecords());
+    System.assertEquals(1, iter.totalRecords);
     List<SObject> records = iter.next();
     System.assertEquals(1, records.size());
     List<Account> accounts = (List<Account>) records;
@@ -253,7 +238,7 @@ private class ChunkedCursorIteratorTest {
     System.assertEquals(true, iter.hasNext());
     List<SObject> chunk2 = iter.next();
     System.assertEquals(2, chunk2.size());
-    System.assertEquals(4, iter.getPosition());
+    System.assertEquals(4, iter.position);
     Test.stopTest();
   }
 
@@ -265,7 +250,7 @@ private class ChunkedCursorIteratorTest {
       2
     );
 
-    System.assertEquals(0, iter.getTotalRecords());
+    System.assertEquals(0, iter.totalRecords);
     System.assertEquals(false, iter.hasNext());
 
     try {
@@ -301,12 +286,12 @@ private class ChunkedCursorIteratorTest {
 
     // Seek to the end chunk
     iter.seek(4);
-    System.assertEquals(4, iter.getPosition());
+    System.assertEquals(4, iter.position);
     System.assertEquals(true, iter.hasNext());
 
     List<SObject> records = iter.next();
     System.assertEquals(1, records.size());
-    System.assertEquals(5, iter.getPosition());
+    System.assertEquals(5, iter.position);
 
     // Seek validation error
     try {
@@ -327,5 +312,275 @@ private class ChunkedCursorIteratorTest {
     p1.seek(0); // Seek back to start
     System.assertEquals(true, p1.hasNext()); // Limit reset, now we can fetch again
     Test.stopTest();
+  }
+
+  @IsTest
+  static void testResolveAccessLevelSecurityException() {
+    Test.startTest();
+    try {
+      ChunkedCursorOptions.resolveAccessLevel(
+        'USER_MODE',
+        'invalid_permission_set_id'
+      );
+      System.assert(
+        false,
+        'Should have thrown SecurityException on invalid permission set'
+      );
+    } catch (System.SecurityException e) {
+      System.assert(true);
+    }
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testBlankQueryRejected() {
+    Test.startTest();
+    try {
+      new ChunkedCursorOptions('', 2);
+      System.assert(false, 'Blank query should throw IllegalArgumentException');
+    } catch (System.IllegalArgumentException e) {
+      System.assert(true);
+    }
+    try {
+      new ChunkedCursorOptions(null, 2);
+      System.assert(false, 'Null query should throw IllegalArgumentException');
+    } catch (System.IllegalArgumentException e) {
+      System.assert(true);
+    }
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testExplicitAccessModeApi() {
+    Test.startTest();
+    ChunkedCursorOptions opts = new ChunkedCursorOptions(
+      'SELECT Id FROM Account',
+      2
+    );
+    // Default is USER_MODE
+    System.assertEquals('USER_MODE', opts.accessMode);
+    System.assertEquals(System.AccessLevel.USER_MODE, opts.accessLevel);
+
+    opts.setSystemMode();
+    System.assertEquals('SYSTEM_MODE', opts.accessMode);
+    System.assertEquals(System.AccessLevel.SYSTEM_MODE, opts.accessLevel);
+
+    opts.setUserMode();
+    System.assertEquals('USER_MODE', opts.accessMode);
+
+    // Built by concatenation so it is not a hardcoded Id literal; this only
+    // exercises the setter round-trip, which does not validate the value.
+    String fakePermSetId = '0PS' + '000000000000';
+    opts.setPermissionSetId(fakePermSetId);
+    System.assertEquals(fakePermSetId, opts.permissionSetId);
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testResolveAccessLevelBaseModes() {
+    Test.startTest();
+    System.assertEquals(
+      System.AccessLevel.USER_MODE,
+      ChunkedCursorOptions.resolveAccessLevel('USER_MODE', null)
+    );
+    System.assertEquals(
+      System.AccessLevel.SYSTEM_MODE,
+      ChunkedCursorOptions.resolveAccessLevel('SYSTEM_MODE', null)
+    );
+    // Unknown mode falls back to USER_MODE
+    System.assertEquals(
+      System.AccessLevel.USER_MODE,
+      ChunkedCursorOptions.resolveAccessLevel('BOGUS', '')
+    );
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testHealAndClose() {
+    Test.startTest();
+    ChunkedCursorIterator iter = new ChunkedCursorIterator(
+      'SELECT Id, Name FROM Account ORDER BY Name',
+      2
+    );
+
+    List<SObject> chunk1 = iter.next();
+    System.assertEquals(2, chunk1.size());
+
+    // heal() re-opens the cursor without losing position/total
+    iter.heal();
+    System.assertEquals(5, iter.getTotalRecords());
+    System.assertEquals(2, iter.position);
+
+    // close() releases the cursor; re-entering iteration re-opens it lazily
+    iter.close();
+    System.assertEquals(null, iter.standardCursor);
+    System.assertEquals(true, iter.hasNext());
+    List<SObject> chunk2 = iter.next();
+    System.assertEquals(2, chunk2.size());
+    System.assertEquals(4, iter.position);
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testPaginationPartitioning() {
+    Test.startTest();
+    ChunkedCursorIterator iter = new ChunkedCursorIterator(
+      new ChunkedCursorOptions('SELECT Id, Name FROM Account ORDER BY Name', 2)
+        .setCursorType(ChunkedCursorIterator.CursorType.PAGINATION)
+        .setSObjectType(Account.SObjectType)
+    );
+
+    List<ChunkedCursorIterator> partitions = iter.partition();
+    System.assertEquals(3, partitions.size());
+
+    ChunkedCursorIterator p1 = partitions[0];
+    System.assertEquals(0, p1.position);
+    System.assertEquals(true, p1.hasNext());
+    System.assertEquals(2, p1.next().size());
+    System.assertEquals(false, p1.hasNext());
+
+    ChunkedCursorIterator p3 = partitions[2];
+    System.assertEquals(4, p3.position);
+    System.assertEquals(true, p3.hasNext());
+    System.assertEquals(1, p3.next().size());
+    System.assertEquals(false, p3.hasNext());
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testIsExpiredOrFatalCursorHeuristics() {
+    Test.startTest();
+    // Type name containing TransientCursorException is NOT treated as fatal.
+    // (getTypeName() reflects the class name, so naming drives the branch.)
+    System.assertEquals(
+      false,
+      ChunkedCursorHelper.isExpiredOrFatalCursorException(
+        new MyTransientCursorException('transient blip')
+      )
+    );
+    // A message mentioning a limit is excluded even though it mentions cursor.
+    System.assertEquals(
+      false,
+      ChunkedCursorHelper.isExpiredOrFatalCursorException(
+        new CciTestException('cursor limit exceeded')
+      )
+    );
+    // A generic message mentioning cursor IS treated as expired/fatal.
+    System.assertEquals(
+      true,
+      ChunkedCursorHelper.isExpiredOrFatalCursorException(
+        new CciTestException('the cursor has expired')
+      )
+    );
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testFetchWithSelfHealingHealsOnFatalCursorError() {
+    Test.startTest();
+    FakeFetcher fetcher = new FakeFetcher();
+    fetcher.total = 10;
+    fetcher.query = 'SELECT Id FROM Account';
+    fetcher.failuresRemaining = 1;
+    fetcher.errorToThrow = new CciTestException('the cursor has expired');
+    fetcher.payload = new List<SObject>{ new Account(Name = 'Healed') };
+
+    List<SObject> result = ChunkedCursorHelper.fetchWithSelfHealing(
+      fetcher,
+      0,
+      2
+    );
+
+    System.assertEquals(1, result.size(), 'Should return healed payload');
+    System.assertEquals(
+      true,
+      fetcher.healed,
+      'heal() should have been invoked'
+    );
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void testFetchWithSelfHealingRethrowsNonCursorError() {
+    Test.startTest();
+    FakeFetcher fetcher = new FakeFetcher();
+    fetcher.total = 10;
+    fetcher.query = 'SELECT Id FROM Account';
+    fetcher.failuresRemaining = 1;
+    fetcher.errorToThrow = new CciTestException('something unrelated');
+
+    try {
+      ChunkedCursorHelper.fetchWithSelfHealing(fetcher, 0, 2);
+      System.assert(false, 'Non-cursor error should propagate');
+    } catch (Exception e) {
+      System.assertEquals('something unrelated', e.getMessage());
+    }
+    System.assertEquals(
+      false,
+      fetcher.healed,
+      'heal() must not run for unrelated errors'
+    );
+    Test.stopTest();
+  }
+
+  /**
+   * @description Generic controllable-message exception for heuristic tests.
+   */
+  private class CciTestException extends Exception {
+  }
+
+  /**
+   * @description Exception whose class name contains 'TransientCursorException'
+   * so getTypeName() drives the transient (non-fatal) heuristic branch.
+   */
+  private class MyTransientCursorException extends Exception {
+  }
+
+  /**
+   * @description In-memory CursorFetcher used to drive the self-healing logic in
+   * ChunkedCursorHelper without a live database cursor.
+   */
+  private class FakeFetcher implements ChunkedCursorHelper.CursorFetcher {
+    public Integer failuresRemaining = 0;
+    public Exception errorToThrow;
+    public List<SObject> payload = new List<SObject>();
+    public Integer total = 0;
+    public String query;
+    public Boolean healed = false;
+
+    /**
+     * @description Returns the canned payload, optionally throwing first to
+     * simulate a configured number of consecutive fetch failures.
+     * @param position The chunk start position (ignored by this fake).
+     * @param size The chunk size (ignored by this fake).
+     * @return The configured payload records.
+     */
+    public List<SObject> fetch(Integer position, Integer size) {
+      if (this.failuresRemaining > 0) {
+        this.failuresRemaining--;
+        throw this.errorToThrow;
+      }
+      return this.payload;
+    }
+    /**
+     * @description Records that a heal was requested.
+     */
+    public void heal() {
+      this.healed = true;
+    }
+    /**
+     * @description Returns the configured total record count.
+     * @return The total records.
+     */
+    public Integer getTotalRecords() {
+      return this.total;
+    }
+    /**
+     * @description Returns the configured query string.
+     * @return The query.
+     */
+    public String getQuery() {
+      return this.query;
+    }
   }
 }
