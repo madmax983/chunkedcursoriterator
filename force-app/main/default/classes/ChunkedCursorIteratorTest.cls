@@ -53,7 +53,11 @@ private class ChunkedCursorIteratorTest {
     System.assertEquals(5, iter.position);
 
     System.assertEquals(false, iter.hasNext());
-    System.assertEquals(null, iter.standardCursor); // Auto-close verification
+    System.assertNotEquals(
+      null,
+      iter.standardCursor,
+      'Cursor handle is retained after exhaustion for cheap re-entry (no auto-close)'
+    );
     Test.stopTest();
   }
 
@@ -88,7 +92,11 @@ private class ChunkedCursorIteratorTest {
 
     System.assertEquals(3, chunkCount);
     System.assertEquals(5, totalProcessed);
-    System.assertEquals(null, iter.paginationCursor); // Auto-close verification
+    System.assertNotEquals(
+      null,
+      iter.paginationCursor,
+      'Pagination cursor handle is retained after exhaustion for cheap re-entry (no auto-close)'
+    );
     Test.stopTest();
   }
 
@@ -511,7 +519,7 @@ private class ChunkedCursorIteratorTest {
   }
 
   @IsTest
-  static void testHealAndClose() {
+  static void testHeal() {
     Test.startTest();
     ChunkedCursorIterator iter = new ChunkedCursorIterator(
       'SELECT Id, Name FROM Account ORDER BY Name',
@@ -526,9 +534,8 @@ private class ChunkedCursorIteratorTest {
     System.assertEquals(5, iter.getTotalRecords());
     System.assertEquals(2, iter.position);
 
-    // close() releases the cursor; re-entering iteration re-opens it lazily
-    iter.close();
-    System.assertEquals(null, iter.standardCursor);
+    // A lost cursor is re-opened lazily on the next fetch, resuming at position.
+    iter.standardCursor = null;
     System.assertEquals(true, iter.hasNext());
     List<SObject> chunk2 = iter.next();
     System.assertEquals(2, chunk2.size());

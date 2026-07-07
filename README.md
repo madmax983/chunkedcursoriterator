@@ -187,7 +187,6 @@ for (ChunkedCursorIterator job : parallelJobs) {
 | `next()`                       | `List<SObject>`               | Retrieves the next subset of records based on configured chunk size. Automatically re-initializes the cursor if a cursor error is encountered.                                 |
 | `seek(Integer targetPosition)` | `void`                        | Resets the pointer position to `targetPosition`. Validates that the index is between `0` and the total record count.                                                           |
 | `partition()`                  | `List<ChunkedCursorIterator>` | Generates a list of independent iterator instances starting at sequential offsets matching the configured chunk size. Sets the maximum iteration limit of each partition to 1. |
-| `close()`                      | `void`                        | Nullifies local references to standard and pagination cursor objects.                                                                                                          |
 
 ### Read-Only Properties
 

@@ -202,19 +202,11 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
 
   /**
    * @description Checks if there are more chunks of records to fetch.
-   * Note: as a side effect, when no more chunks remain this releases the active
-   * cursor (see close()) to avoid holding a concurrent cursor slot. Re-entering
-   * iteration afterwards (e.g. via seek()) transparently re-opens the cursor.
    * @return True if there are remaining records and iteration limits allow, false otherwise.
    */
   public Boolean hasNext() {
-    Boolean hasMore =
-      (this.iterationsRemaining == null || this.iterationsRemaining > 0) &&
-      this.position < this.totalRecords;
-    if (!hasMore) {
-      close();
-    }
-    return hasMore;
+    return ((this.iterationsRemaining == null ||
+    this.iterationsRemaining > 0) && this.position < this.totalRecords);
   }
 
   /**
@@ -239,21 +231,15 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
     if (!hasNext()) {
       throw new System.NoSuchElementException('Iterator has no more elements.');
     }
-    try {
-      Integer fetchSize = Math.min(
-        this.chunkSize,
-        this.totalRecords - this.position
-      );
-      List<SObject> records = fetchRecordsWithSelfHealing(fetchSize);
+    Integer fetchSize = Math.min(
+      this.chunkSize,
+      this.totalRecords - this.position
+    );
+    List<SObject> records = fetchRecordsWithSelfHealing(fetchSize);
 
-      advancePosition(records, fetchSize);
+    advancePosition(records, fetchSize);
 
-      return castToTypedList(records);
-    } finally {
-      if (!hasNext()) {
-        close();
-      }
-    }
+    return castToTypedList(records);
   }
 
   /**
@@ -410,13 +396,5 @@ public inherited sharing class ChunkedCursorIterator implements Iterable<List<SO
    */
   public Integer getTotalRecords() {
     return this.totalRecords;
-  }
-
-  /**
-   * @description Explicitly releases the cursor resources to avoid hitting the concurrent cursor limit.
-   */
-  public void close() {
-    this.standardCursor = null;
-    this.paginationCursor = null;
   }
 }

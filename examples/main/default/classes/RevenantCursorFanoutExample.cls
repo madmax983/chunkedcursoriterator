@@ -137,7 +137,6 @@ public inherited sharing class RevenantCursorFanoutExample {
       );
       Integer totalRecords = iterator.totalRecords;
       String serializedCursor = JSON.serialize(iterator);
-      iterator.close();
 
       Map<String, Object> output = new Map<String, Object>{
         'totalRecords' => totalRecords,
